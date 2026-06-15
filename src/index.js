@@ -242,6 +242,11 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'flow_queue_reset',
+    description: 'Forcefully reset the job queue. Use this if a job is permanently stuck in "running" state and blocking other generations.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ];
 
 async function handleToolCall(name, args) {
@@ -374,6 +379,11 @@ async function handleToolCall(name, args) {
 
     case 'flow_queue_status': {
       return { content: [{ type: 'text', text: JSON.stringify(jobQueue.getStatus(args?.history_limit), null, 2) }] };
+    }
+
+    case 'flow_queue_reset': {
+      jobQueue.reset();
+      return { content: [{ type: 'text', text: JSON.stringify({ status: 'success', message: 'Job queue forcefully reset.' }) }] };
     }
 
     default:

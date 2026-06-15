@@ -10,3 +10,7 @@ config/flow.projects.json
 .DS_Store
 *.log
 test-agent-generation.js
+temp-*.js
+scripts/test-character-generation.js
+scripts/inspect-character-rename.js
+ui_ss/

@@ -7,6 +7,7 @@ import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
+import { configureGenerationUI } from '../browser/safe-actions.js';
 
 function selectModel(requested) {
   const available = get('imageModels', {});
@@ -83,10 +84,15 @@ export async function handleGenerateImage(args) {
         `Ratio "${args.ratio}" not available. Available: ${get('ratios', []).join(', ')}`);
     }
 
-    // STEP 4: Verify the model selector confirms IMAGE mode (NOT video)
-    // Flow's bottom toolbar is always present in a project with a model selector.
-    // No "Image/Video" mode tabs exist — the generation mode is determined by
-    // which model is selected (e.g. "Nano Banana 2" = image, "Omni Flash" = video).
+    // STEP 4: Configure the generation UI actively to prevent credit wastage
+    await configureGenerationUI({
+      mode: 'Image',
+      ratio,
+      model,
+      quantity: args.quantity || 1
+    });
+
+    // Double check model selector confirms IMAGE mode (NOT video)
     const modelFromUI = await page.evaluate(() => {
       const modelBtn = Array.from(document.querySelectorAll('button'))
         .find(b => {
@@ -111,7 +117,7 @@ export async function handleGenerateImage(args) {
       }
       logger.info('✅ Model selector confirms image mode');
     } else {
-      logger.warn('Could not read model selector — assuming image mode from config');
+      logger.warn('Could not read model selector after configuration');
     }
 
     // Also verify the generate button exists (confirms the toolbar is active)

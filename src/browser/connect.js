@@ -155,7 +155,9 @@ export async function launchChromeDirect(options = {}) {
 
   logger.info('Launching Chrome directly', { chromePath, cdpPort, headless });
 
-  const chromeProcess = spawn(chromePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const chromeProcess = spawn(chromePath, args, { stdio: 'ignore', detached: true });
+  chromeProcess.unref();
+  global.__chromeProcess = chromeProcess;
 
   const cdpUrl = `http://127.0.0.1:${cdpPort}`;
   let attempts = 0;
@@ -182,6 +184,10 @@ export async function launchChromeDirect(options = {}) {
 }
 
 export async function closeBrowser() {
+  if (global.__chromeProcess) {
+    try { global.__chromeProcess.kill(); } catch (e) { }
+    global.__chromeProcess = null;
+  }
   if (global.__chromeTempDir) {
     try { fs.rmSync(global.__chromeTempDir, { recursive: true, force: true }); }
     catch (e) { logger.warn('Temp cleanup failed', { error: e.message }); }

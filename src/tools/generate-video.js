@@ -3,7 +3,7 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements } from '../browser/safe-actions.js';
+import { detectPageElements, configureGenerationUI } from '../browser/safe-actions.js';
 import { prepareDownload, findNewFiles, saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
@@ -100,37 +100,12 @@ export async function handleGenerateVideo(args) {
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'Could not find prompt input for video');
     }
 
-    // Model selection dropdown
-    try {
-      const modelLocator = page.locator('button:has-text("Omni"), button:has-text("Veo"), [class*="model"] button').first();
-      if (await modelLocator.isVisible().catch(() => false)) {
-        await modelLocator.click();
-        await page.waitForTimeout(500);
-        const optLocator = page.locator(`text="${model}"`).first();
-        if (await optLocator.isVisible().catch(() => false)) {
-          await optLocator.click();
-          await page.waitForTimeout(500);
-        } else {
-          await page.keyboard.press('Escape');
-        }
-      }
-    } catch (err) {
-      logger.warn('Could not select video model', { error: err.message });
-    }
-
     // Select ratio
     const ratios = get('videoRatios', ['9:16', '16:9']);
     const ratio = args.ratio || '16:9';
     if (!ratios.includes(ratio)) {
       throw new FlowError(ErrorCodes.RATIO_NOT_AVAILABLE, `Ratio ${ratio} not available for video`);
     }
-    try {
-      const ratioBtn = page.locator(`button:has-text("${ratio}")`).first();
-      if (await ratioBtn.isVisible().catch(() => false)) {
-        await ratioBtn.click();
-        await page.waitForTimeout(500);
-      }
-    } catch { /* ok */ }
 
     // Select duration
     const durations = get('durations', ['4s', '6s', '8s', '10s']);
@@ -138,23 +113,17 @@ export async function handleGenerateVideo(args) {
     if (!durations.includes(duration)) {
       logger.warn('Duration not available, using 4s', { requested: duration });
     }
-    try {
-      const durBtn = page.locator(`button:has-text("${duration}")`).first();
-      if (await durBtn.isVisible().catch(() => false)) {
-        await durBtn.click();
-        await page.waitForTimeout(500);
-      }
-    } catch { /* ok */ }
 
-    // Select quantity
     const qty = Math.min(Math.max(args.quantity || 1, 1), 4);
-    try {
-      const qtyBtn = page.locator(`button:has-text("x${qty}")`).first();
-      if (await qtyBtn.isVisible().catch(() => false)) {
-        await qtyBtn.click();
-        await page.waitForTimeout(500);
-      }
-    } catch { /* ok */ }
+
+    // Enforce the settings actively in the UI
+    await configureGenerationUI({
+      mode: 'Video',
+      ratio,
+      model,
+      duration,
+      quantity: qty
+    });
 
     // Fill prompt
     await promptInput.click();

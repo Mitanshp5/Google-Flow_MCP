@@ -111,6 +111,12 @@ class JobQueue {
     return this.currentJob;
   }
 
+  reset() {
+    this.currentJob = null;
+    this.jobs.clear();
+    logger.info('Job queue has been forcibly reset.');
+  }
+
   getStatus() {
     return {
       hasActiveJob: this.currentJob?.status === 'running' || this.currentJob?.status === 'queued',
