@@ -51,9 +51,9 @@ ships with Windows (also works on PowerShell 7+).
 ### 1. Clone and install dependencies
 
 ```powershell
-git clone <this-repo-url>
-cd google-flow-browser-mcp
-npm install
+git clone https://github.com/Mitanshp5/Google-Flow_MCP
+cd Google-Flow_MCP
+npm i
 ```
 
 `npm install` will also download Playwright's browser binaries. This project
