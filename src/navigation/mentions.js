@@ -7,8 +7,14 @@ import { takeScreenshot } from '../utils/screenshots.js';
 //  - category tabs (All / Images / Characters / Avatar / Uploads)
 //  - a list of result rows (thumbnail + title + type, e.g. "Cat wearing
 //    space suit fl... / Image")
-//  - a preview pane on the right
-//  - an "Add to Prompt" button to confirm the selection
+//  - (sometimes) a preview pane on the right + an "Add to Prompt" button
+//
+// ⚠️  Two insertion behaviours exist depending on the project/UI version:
+//  A) DIRECT INSERT (default): clicking a result item immediately inserts
+//     the reference as a chip/tag and closes the panel.
+//  B) PREVIEW + CONFIRM: clicking selects a preview; a separate
+//     "Add to Prompt" click is required to confirm.
+//  insertMentionReference() handles both automatically.
 
 const SEARCH_INPUT_SELECTORS = [
   'input[placeholder*="Search assets" i]',
@@ -179,20 +185,47 @@ export async function insertMentionReference(page, inputLocator, name) {
     return false;
   }
 
+  // Wait briefly for the UI to respond to the click
   await page.waitForTimeout(600);
 
-  // Confirm the selection with "Add to Prompt"
+  // ── UI Behaviour Detection ──────────────────────────────────────────────
+  // There are two possible behaviours after clicking a result item:
+  //
+  //  A) DIRECT INSERT (current default UI):
+  //     Clicking the item immediately inserts it as a chip/tag into the
+  //     prompt input AND closes the popup.  No further action needed.
+  //
+  //  B) PREVIEW + CONFIRM (older / alternate UI):
+  //     Clicking the item selects it for preview on the right pane and
+  //     keeps the panel open.  A separate "Add to Prompt" click is required.
+  //
+  // We detect which behaviour occurred by checking whether the panel is
+  // still visible.  If it closed → insertion already succeeded (A).
+  // If still open → we need to click "Add to Prompt" (B).
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Check if the popup is still open by looking for the search input or Add to Prompt button
+  const panelStillOpen = await findVisible(page, [...SEARCH_INPUT_SELECTORS, ...ADD_TO_PROMPT_SELECTORS]);
+
+  if (!panelStillOpen) {
+    // Behaviour A: popup closed automatically → reference chip was inserted
+    logger.info('Mention reference inserted directly (popup closed after click)', { name });
+    return true;
+  }
+
+  // Behaviour B: panel still open → look for "Add to Prompt" button
   const addBtn = page.locator(ADD_TO_PROMPT_SELECTORS.join(', ')).first();
   if (await addBtn.isVisible().catch(() => false)) {
     await addBtn.click();
     await page.waitForTimeout(500);
-    logger.info('Mention reference added to prompt', { name });
+    logger.info('Mention reference added to prompt via "Add to Prompt" button', { name });
     return true;
   }
 
+  // Panel is open but no "Add to Prompt" found — close it gracefully
   await takeScreenshot(page, 'add-to-prompt-not-found');
   await closeMentionPopup(page, inputLocator);
-  logger.warn('"Add to Prompt" button not found after selecting asset', { name });
+  logger.warn('Panel still open but "Add to Prompt" not found; closed panel', { name });
   return false;
 }
 

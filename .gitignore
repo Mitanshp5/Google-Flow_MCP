@@ -13,4 +13,5 @@ test-agent-generation.js
 temp-*.js
 scripts/test-character-generation.js
 scripts/inspect-character-rename.js
+scripts/test-mention-reference.mjs
 ui_ss/
