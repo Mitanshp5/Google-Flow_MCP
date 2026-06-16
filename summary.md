@@ -17,7 +17,6 @@ A comprehensive Model Context Protocol (MCP) server for Google Flow, allowing AI
   - Resolved complex Windows PowerShell escaping issues (`Start-Process` string splitting on spaces) and encoding (unicode em-dash bugs).
 - **Documentation & Open Source Prep**: 
   - Restructured `README.md` with explicit multi-OS instructions and agent connection guides.
-  - Standardized default Chrome profile examples to `Default` instead of `Profile 3`.
   - Added MIT License to the repository.
   - Cleaned up config templates (`flow.config.example.json`) to remove sensitive emails/paths.
   - Repo successfully pushed to `Mitanshp5/Google-Flow_MCP`.
