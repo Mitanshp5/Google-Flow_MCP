@@ -26,14 +26,14 @@ function Write-Err  { param([string]$Message) Write-Host "[$(Get-Date -Format 'y
 # --- Defaults (overridden by config/flow.config.json if present) ---
 $ChromePath = Join-Path $env:PROGRAMFILES 'Google\Chrome\Application\chrome.exe'
 if (-not (Test-Path $ChromePath)) {
-    $ChromePath = Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'
+    $ChromePath = Join-Path ([System.Environment]::GetFolderPath('ProgramFilesX86')) 'Google\Chrome\Application\chrome.exe'
 }
 if (-not (Test-Path $ChromePath)) {
     $ChromePath = Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe'
 }
 
 $UserDataDir = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
-$Profile     = 'Profile 3'
+$Profile     = 'Default'
 $CdpPort     = 9222
 
 if (Test-Path $ConfigPath) {
@@ -44,7 +44,7 @@ if (Test-Path $ConfigPath) {
         if ($cfg.chromeProfile)     { $Profile     = $cfg.chromeProfile }
         if ($cfg.cdpPort)           { $CdpPort     = $cfg.cdpPort }
     } catch {
-        Write-Warn "Could not parse $ConfigPath — using defaults. ($($_.Exception.Message))"
+        Write-Warn "Could not parse $ConfigPath - using defaults. ($($_.Exception.Message))"
     }
 }
 
@@ -62,7 +62,7 @@ try {
 } catch { }
 
 if ($portInUse) {
-    Write-Warn "CDP port $CdpPort already in use — checking if it's responding to CDP..."
+    Write-Warn "CDP port $CdpPort already in use - checking if it's responding to CDP..."
     try {
         $resp = Invoke-WebRequest -Uri "http://localhost:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 3
         if ($resp.StatusCode -eq 200) {
@@ -81,8 +81,8 @@ Write-Log "Chrome path: $ChromePath"
 Write-Log "User data dir: $UserDataDir"
 
 $chromeArgs = @(
-    "--user-data-dir=$UserDataDir",
-    "--profile-directory=$Profile",
+    "--user-data-dir=`"$UserDataDir`"",
+    "--profile-directory=`"$Profile`"",
     "--remote-debugging-port=$CdpPort",
     '--no-first-run',
     '--no-default-browser-check',

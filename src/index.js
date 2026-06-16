@@ -59,7 +59,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_account_check',
-    description: 'Verify the logged-in Google account matches the configured expected email (Profile 3).',
+    description: 'Verify the logged-in Google account matches the configured expected email (Default).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -274,12 +274,12 @@ async function handleToolCall(name, args) {
       if (oauthRequired) {
         return { content: [{ type: 'text', text: JSON.stringify({
           status: 'oauth_required',
-          message: 'Google Flow requires OAuth authentication. Open Chrome Profile 3 manually once:\n'
-            + '  1. Launch: google-chrome --profile-directory="Profile 3"\n'
+          message: 'Google Flow requires OAuth authentication. Open Chrome Default manually once:\n'
+            + '  1. Launch: google-chrome --profile-directory="Default"\n'
             + '  2. Navigate to: https://labs.google/fx/tools/flow/tools/grid-architect\n'
             + '  3. Complete the Google sign-in (one time)\n'
             + '  4. Retry this MCP tool in headless mode',
-          browserType: 'Chrome Profile 3',
+          browserType: 'Chrome Default',
           account: accountCheck?.account || 'verified-account',
           url: page.url().substring(0, 100),
           accountVerified: accountCheck,
@@ -287,7 +287,7 @@ async function handleToolCall(name, args) {
       }
       return { content: [{ type: 'text', text: JSON.stringify({
         status: 'connected',
-        browserType: 'Chrome Profile 3',
+        browserType: 'Chrome Default',
         account: accountCheck?.account || 'verified-account',
         url: page.url(),
         accountVerified: accountCheck,

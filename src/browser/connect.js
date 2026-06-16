@@ -99,7 +99,7 @@ async function launchNewBrowser(cdpPort, options = {}) {
 
 /**
  * Launch Chrome DIRECTLY (not via Playwright) to avoid automation detection
- * (navigator.webdriver=false). Creates temp user-data-dir with Profile 3 cookies,
+ * (navigator.webdriver=false). Creates temp user-data-dir with Default cookies,
  * launches Chrome via shell, then connects Playwright via CDP.
  */
 export async function launchChromeDirect(options = {}) {
@@ -107,8 +107,8 @@ export async function launchChromeDirect(options = {}) {
   const cdpPort = options.cdpPort || get('cdpPort', 9222);
   const headless = options.headless ?? get('headless', false);
   const profileSource = options.profileSource
-    || (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), get('chromeProfile', 'Profile 3')))
-    || getChromeProfileSourcePath(get('chromeProfile', 'Profile 3'));
+    || (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), get('chromeProfile', 'Default')))
+    || getChromeProfileSourcePath(get('chromeProfile', 'Default'));
 
   if (isConnected && page) {
     logger.info('Already connected, reusing browser');
@@ -124,10 +124,10 @@ export async function launchChromeDirect(options = {}) {
   fs.mkdirSync(tempDir, { recursive: true });
 
   // "Local State" lives alongside the profile folder, inside the Chrome
-  // "User Data" directory (e.g. "User Data/Local State", "User Data/Profile 3").
+  // "User Data" directory (e.g. "User Data/Local State", "User Data/Default").
   const localStateSrc = path.join(path.dirname(profileSource), 'Local State');
   if (fs.existsSync(profileSource)) {
-    fs.cpSync(profileSource, path.join(tempDir, get('chromeProfile', 'Profile 3')), { recursive: true });
+    fs.cpSync(profileSource, path.join(tempDir, get('chromeProfile', 'Default')), { recursive: true });
   }
   if (fs.existsSync(localStateSrc)) {
     fs.cpSync(localStateSrc, path.join(tempDir, 'Local State'));
@@ -146,7 +146,7 @@ export async function launchChromeDirect(options = {}) {
   const args = [
     `--remote-debugging-port=${cdpPort}`,
     `--user-data-dir=${tempDir}`,
-    `--profile-directory=${get('chromeProfile', 'Profile 3')}`,
+    `--profile-directory=${get('chromeProfile', 'Default')}`,
     '--no-first-run', '--no-default-browser-check',
     '--disable-blink-features=AutomationControlled',
     '--window-size=1920,1080',

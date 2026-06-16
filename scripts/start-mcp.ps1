@@ -39,7 +39,7 @@ if (Test-Path $ConfigPath) {
 try {
     Invoke-WebRequest -Uri "http://localhost:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 2 | Out-Null
 } catch {
-    Write-Warn "CDP port $CdpPort not responding — Chrome might not be running."
+    Write-Warn "CDP port $CdpPort not responding - Chrome might not be running."
     Write-Warn 'Run scripts\start-browser.ps1 first, or the MCP server will try to launch Chrome automatically.'
 }
 

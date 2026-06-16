@@ -6,10 +6,10 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "start-browser": "powershell -ExecutionPolicy Bypass -File scripts/start-browser.ps1",
-    "start-mcp": "powershell -ExecutionPolicy Bypass -File scripts/start-mcp.ps1",
-    "register-opencode": "powershell -ExecutionPolicy Bypass -File scripts/register-opencode.ps1",
-    "test": "powershell -ExecutionPolicy Bypass -File scripts/test-flow-image.ps1"
+    "start-browser": "node scripts/run.js start-browser",
+    "start-mcp": "node scripts/run.js start-mcp",
+    "register-opencode": "node scripts/run.js register-opencode",
+    "test": "node scripts/run.js test-flow-image"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.9.0",

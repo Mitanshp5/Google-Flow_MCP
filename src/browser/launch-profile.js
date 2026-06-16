@@ -17,7 +17,7 @@ export async function launchKiaraProfile(headless = false) {
   }
 
   const chromePath = get('chromeExecutable') || getDefaultChromePath();
-  const profileName = get('chromeProfile', 'Profile 3');
+  const profileName = get('chromeProfile', 'Default');
   const profileSource = (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), profileName))
     || getChromeProfileSourcePath(profileName);
 

@@ -78,8 +78,8 @@ export function getDefaultChromeUserDataDir() {
 
 /**
  * Full path to a specific Chrome profile directory
- * (e.g. ".../User Data/Profile 3" or ".../google-chrome/Profile 3").
+ * (e.g. ".../User Data/Default" or ".../google-chrome/Default").
  */
-export function getChromeProfileSourcePath(profileName = 'Profile 3') {
+export function getChromeProfileSourcePath(profileName = 'Default') {
   return path.join(getDefaultChromeUserDataDir(), profileName);
 }
