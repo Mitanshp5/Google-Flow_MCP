@@ -17,21 +17,26 @@ command -v node >/dev/null 2>&1 || die "Node.js is required but was not found in
 
 # --- Detect OpenCode Config Location ---
 CONFIG_PATH=""
-CANDIDATE1="$HOME/.config/opencode/opencode.json"
-CANDIDATE2="$HOME/Library/Application Support/OpenCode/opencode.json"
+CANDIDATES=(
+  "$HOME/.config/opencode/opencode.json"
+  "$HOME/.config/opencode/opencode.jsonc"
+  "$HOME/Library/Application Support/OpenCode/opencode.json"
+  "$HOME/Library/Application Support/OpenCode/opencode.jsonc"
+)
 
-if [[ -f "$CANDIDATE1" ]]; then
-  CONFIG_PATH="$CANDIDATE1"
-elif [[ -f "$CANDIDATE2" ]]; then
-  CONFIG_PATH="$CANDIDATE2"
-else
+for c in "${CANDIDATES[@]}"; do
+  if [[ -f "$c" ]]; then
+    CONFIG_PATH="$c"
+    break
+  fi
+done
+
+if [[ -z "$CONFIG_PATH" ]]; then
   # Check if path is overridden via argument
   if [[ $# -ge 1 && -n "$1" ]]; then
     CONFIG_PATH="$1"
   else
-    die "OpenCode config not found at:
-  $CANDIDATE1
-  $CANDIDATE2
+    die "OpenCode config not found in standard locations.
 Please pass the correct path as an argument, e.g. scripts/register-opencode.sh /path/to/opencode.json"
   fi
 fi
@@ -55,16 +60,15 @@ const fs = require('fs');
 try {
   const data = fs.readFileSync('$CONFIG_PATH', 'utf8');
   const json = JSON.parse(data);
-  if (!json.mcpServers) json.mcpServers = {};
-  if (json.mcpServers['google-flow-browser']) {
+  if (!json.mcp) json.mcp = {};
+  if (json.mcp['Google-Flow']) {
     console.log('ALREADY_REGISTERED');
     process.exit(0);
   }
-  json.mcpServers['google-flow-browser'] = {
-    command: 'node',
-    args: ['$SERVER_ENTRY'],
-    disabled: false,
-    autoApprove: []
+  json.mcp['Google-Flow'] = {
+    type: 'local',
+    command: ['node', '$SERVER_ENTRY'],
+    enabled: true
   };
   fs.writeFileSync('$CONFIG_PATH', JSON.stringify(json, null, 2), 'utf8');
   console.log('SUCCESS');
@@ -75,10 +79,10 @@ try {
 " 2>/dev/null || echo "FAILED")
 
 if [[ "$RESULT" == "ALREADY_REGISTERED" ]]; then
-  warn "google-flow-browser MCP already registered. Skipping."
+  warn "Google-Flow MCP already registered. Skipping."
   exit 0
 elif [[ "$RESULT" == "SUCCESS" ]]; then
-  log "google-flow-browser MCP registered in OpenCode config"
+  log "Google-Flow MCP registered in OpenCode config"
   log "Server command: node $SERVER_ENTRY"
   log ""
   log "IMPORTANT: Restart OpenCode for the changes to take effect."

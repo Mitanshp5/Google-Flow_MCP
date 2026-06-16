@@ -133,7 +133,7 @@ Add the following to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "google-flow-browser": {
+    "Google-Flow": {
       "command": "node",
       "args": ["/absolute/path/to/Google-Flow_MCP/src/index.js"]
     }
@@ -144,14 +144,14 @@ Add the following to your `claude_desktop_config.json`:
 **Cursor (Codex)**
 1. Open Cursor Settings > Features > MCP.
 2. Click **+ Add New MCP Server**.
-3. Name: `google-flow-browser`
+3. Name: `Google-Flow`
 4. Type: `command`
 5. Command: `node /absolute/path/to/Google-Flow_MCP/src/index.js`
 
 **Gemini CLI**
 To add the server to Gemini CLI, run:
 ```bash
-gemini mcp add google-flow-browser "node /absolute/path/to/Google-Flow_MCP/src/index.js"
+gemini mcp add Google-Flow "node /absolute/path/to/Google-Flow_MCP/src/index.js"
 ```
 
 **OpenCode**
