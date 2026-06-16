@@ -128,7 +128,17 @@ This checks Node is installed, checks Chrome's CDP port is responding, and runs 
 
 ### 3. Connect to AI Agents
 
+You can automatically configure OpenCode and Gemini CLI in one step:
+
+```bash
+npm run register
+```
+This will automatically find their configuration files and add the `Google-Flow` MCP server. 
+
+*(You can also target specific clients: `npm run register -- --opencode` or `--gemini`)*
+
 **Claude Desktop**
+Currently, Claude Desktop requires manual configuration:
 Add the following to your `claude_desktop_config.json`:
 ```json
 {
@@ -142,24 +152,12 @@ Add the following to your `claude_desktop_config.json`:
 ```
 
 **Cursor (Codex)**
+Currently, Cursor requires manual UI configuration:
 1. Open Cursor Settings > Features > MCP.
 2. Click **+ Add New MCP Server**.
 3. Name: `Google-Flow`
 4. Type: `command`
 5. Command: `node /absolute/path/to/Google-Flow_MCP/src/index.js`
-
-**Gemini CLI**
-To add the server to Gemini CLI, run:
-```bash
-gemini mcp add Google-Flow "node /absolute/path/to/Google-Flow_MCP/src/index.js"
-```
-
-**OpenCode**
-If you use OpenCode, you can auto-register the server:
-```bash
-npm run register-opencode
-```
-*(If your config is in a custom location, append `-- "/path/to/opencode.json"`)*
 
 ### 4. Verify everything end-to-end
 With Chrome running (step 1), run:

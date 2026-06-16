@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "start-browser": "node scripts/run.js start-browser",
     "start-mcp": "node scripts/run.js start-mcp",
-    "register-opencode": "node scripts/run.js register-opencode",
+    "register": "node scripts/run.js register",
     "test": "node scripts/run.js test-flow-image"
   },
   "dependencies": {
