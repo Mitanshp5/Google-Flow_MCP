@@ -1,54 +1,33 @@
-# Anchored Summary — Google Flow Browser MCP
+# Anchored Summary - Google Flow Browser MCP
 
 ## Goal
-Complete MCP server for Google Flow with Playwright, adapted to the new project-based Flow UI, pushed to GitHub without sensitive data.
+A comprehensive Model Context Protocol (MCP) server for Google Flow, allowing AI agents to securely drive the Flow UI using an existing Chrome session via Playwright CDP without needing credentials.
 
-## Constraints & Preferences
-- Never ask for Google password, never steal/export cookies, never bypass captcha or anti-bot
-- Stop cleanly on captcha/verification, request manual intervention
-- Single-job queue, no parallel generation
-- Video: setup UI only, no final click. Grid Architect: setup only, no Generate click
-- Clean GitHub push: no cookies, credentials, or local paths in public repo
-- **PROJECT-BASED**: Always work inside a project. Reuse existing project if same campaign, create new otherwise
-- **"Si tu penses que c'est le même projet ou de la même marque → réutilise le projet. Au moindre doute → nouveau projet"**
-- Browser must remain visible (`headless: false`) during collaborative UI exploration
+## Core Features & Constraints
+- **Security First**: Never asks for passwords, uses existing Chrome sessions, and avoids bot detection by using `navigator.webdriver=false` through direct Chrome execution followed by CDP attach.
+- **Project-based Context**: All operations are routed into projects to ensure context is retained (reusing or creating new projects).
+- **Cross-Platform**: Natively supports Windows, macOS, and Linux using a unified `npm run` dispatcher (`scripts/run.js`) which automatically calls the correct OS scripts (`.ps1` or `.sh`).
+- **Cost-Safe Design**: Generation tools default to `auto_confirm: false` to prep UI settings without automatically consuming Google Flow credits, requiring manual confirmation for expensive video generations.
+- **Supported Clients**: OpenCode, Claude Desktop, Cursor (Codex), and Gemini CLI.
 
-## Progress
-### Done ✓
-- **Anti-detection launch**: `launchChromeDirect()` → `navigator.webdriver=false` → Google OAuth bypass
-- **GitHub push**: Clean push to `TMSSS05/google-flow-browser-mcp` — 35 files, no sensitive data
-- **All 5 cleanup tasks done**: .gitignore, config example, email defaults removed, README sanitized, git init + push
-- **`project-navigator.js` created**: 6 exported functions (`ensureProjectInContext`, `createNewProject`, `navigateToSidebar`, `listExistingProjects`, `getActiveSidebarSection`, `registerTaskInProject`)
-- **All 8 creation/action tools rewritten with project context**:
-  - `generate-image.js` → `ensureProjectInContext()` + `navigateToSidebar()`
-  - `generate-video.js` → project context + sidebar navigation
-  - `create-character.js` + `open-characters.js` → `navigateToSidebar('Personnages')`
-  - `create-scene.js` → `navigateToSidebar('Scènes')`
-  - `grid-architect.js` → `navigateToSidebar('Outils')`
-  - `open-tools-gallery.js` → `navigateToSidebar('Outils')`
-  - `use-flow-tool.js` → `navigateToSidebar('Outils')`
-- **`index.js` schemas updated**: `project_name` + `campaign` params added to 6 tool definitions
-- **All 25 JS files pass syntax check** (node --check)
-
-### Pending
-- Restart MCP server → E2E test: create project → generate image (banana + straw hat + mojito)
+## Recent Progress (Done)
+- **Cross-Platform Overhaul**: 
+  - Migrated hardcoded paths and scripts to support dynamic OS-aware paths for Chrome and User Data locations.
+  - Implemented `run.js` to dispatch `npm run start-browser`, `npm run start-mcp`, etc., intelligently.
+  - Resolved complex Windows PowerShell escaping issues (`Start-Process` string splitting on spaces) and encoding (unicode em-dash bugs).
+- **Documentation & Open Source Prep**: 
+  - Restructured `README.md` with explicit multi-OS instructions and agent connection guides.
+  - Standardized default Chrome profile examples to `Default` instead of `Profile 3`.
+  - Added MIT License to the repository.
+  - Cleaned up config templates (`flow.config.example.json`) to remove sensitive emails/paths.
+  - Repo successfully pushed to `Mitanshp5/Google-Flow_MCP`.
 
 ## Architecture
-- `navigator.webdriver: false` by direct Chrome launch + Playwright CDP attach
-- Flow main page: `https://labs.google/fx/fr/tools/flow`, projects: `/fx/fr/tools/flow/project/{uuid}`
-- `ensureProjectInContext(page, { name, campaign, forceNew })` → checks URL ← checks stored projects ← creates new
-- Sidebar sections: Personnages, Scènes, Outils, Corbeille
-- `config/flow.projects.json` stores project history (gitignored)
-- MCP server running in tmux session `flow-mcp`, Chrome visible on :9222
+- `src/index.js` — Core MCP server entry point and tool schemas.
+- `src/browser/` — Connection and launch logic (avoiding Playwright bot detection).
+- `src/tools/` — Specific handlers for Flow UI features (image generation, video generation, etc).
+- `scripts/run.js` — Universal command dispatcher that invokes `.ps1` (Windows) or `.sh` (POSIX).
 
-## Next Immediate Step
-1. Restart MCP server (kill + restart tmux)
-2. Call `flow_connect` → Flow loads
-3. Call `flow_generate_image` with `project_name: "Test Banane"`, `campaign: "test"`, prompt: "banana with straw hat and mojito cocktail"
-
-## Relevant Files
-- `/home/tmsss/Documents/MCP/google-flow-browser-mcp/src/navigation/project-navigator.js` — core project management
-- `/home/tmsss/Documents/MCP/google-flow-browser-mcp/src/tools/generate-image.js` — image gen with project context
-- `/home/tmsss/Documents/MCP/google-flow-browser-mcp/src/index.js` — tool schemas with project_name/campaign
-- `/home/tmsss/Documents/MCP/google-flow-browser-mcp/src/browser/connect.js` — anti-detection CDP attach
-- `/home/tmsss/Documents/MCP/google-flow-browser-mcp/.gitignore` — excludes projects.json + config
+## Pending / Next Steps
+- Verify end-to-end multi-agent usability using the newly documented connection steps.
+- Maintain and update UI DOM selectors if Google Flow's interface changes in the future.
