@@ -21,9 +21,20 @@
   "license": "MIT",
   "author": "Mitansh Prajapati",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/index.js",
+  "bin": {
+    "google-flow-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "config/flow.config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "node src/index.js",
+    "build": "node build.js",
+    "prepublishOnly": "npm run build",
+    "start": "node dist/index.js",
     "start-browser": "node scripts/run.js start-browser",
     "start-mcp": "node scripts/run.js start-mcp",
     "register": "node scripts/run.js register",
@@ -34,7 +45,9 @@
     "playwright": "^1.51.0",
     "zod": "^3.24.0"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  },
   "engines": {
     "node": ">=18.0.0"
   }

@@ -15,3 +15,4 @@ scripts/test-character-generation.js
 scripts/inspect-character-rename.js
 scripts/test-mention-reference.mjs
 ui_ss/
+dist/
