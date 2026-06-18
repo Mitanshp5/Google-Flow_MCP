@@ -1,7 +1,25 @@
 {
-  "name": "google-flow-browser-mcp",
+  "name": "google-flow_mcp",
   "version": "1.0.0",
   "description": "MCP server for Google Flow (labs.google/fx/tools/flow) via browser automation",
+  "keywords": [
+    "Image",
+    "generation",
+    "Video",
+    "generation",
+    "browser",
+    "automation"
+  ],
+  "homepage": "https://github.com/Mitanshp5/Google-Flow_MCP#readme",
+  "bugs": {
+    "url": "https://github.com/Mitanshp5/Google-Flow_MCP/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mitanshp5/Google-Flow_MCP.git"
+  },
+  "license": "MIT",
+  "author": "Mitansh Prajapati",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -16,6 +34,7 @@
     "playwright": "^1.51.0",
     "zod": "^3.24.0"
   },
+  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0"
   }
