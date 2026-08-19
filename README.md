@@ -216,6 +216,7 @@ everything ends up in one place instead of a new project per request.
 | `flow_use_tool` | Use an arbitrary tool from the Tools gallery |
 | `flow_screenshot` | Take a debug screenshot of the current page |
 | `flow_queue_status` | Check the status of queued generation jobs |
+| `flow_queue_reset` | Forcefully reset the job queue if a job is stuck in "running" state |
 
 ---
 
