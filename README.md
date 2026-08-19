@@ -166,11 +166,6 @@ npm run test
 ```
 This sends a `flow_connect` tool call to the MCP server over stdio and prints the raw response.
 
-You can also run the Node-based end-to-end test suite:
-```bash
-node scripts/test-e2e.mjs
-```
-
 ---
 
 ## Typical workflow
@@ -269,7 +264,6 @@ scripts/
   start-mcp.ps1 / .sh        # run the MCP server (manual check)
   register-opencode.ps1 / .sh# register this server with OpenCode
   test-flow-image.ps1 / .sh  # quick flow_connect smoke test
-  test-e2e.mjs               # multi-tool Node end-to-end test
 src/
   index.js                   # MCP server entry point
   browser/                   # Chrome/CDP connection logic
