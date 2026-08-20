@@ -64,7 +64,7 @@ try {
 if ($portInUse) {
     Write-Warn "CDP port $CdpPort already in use - checking if it's responding to CDP..."
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 3
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 3
         if ($resp.StatusCode -eq 200) {
             Write-Log "Chrome already running on CDP port $CdpPort"
             exit 0
@@ -100,7 +100,7 @@ Write-Log 'Chrome launched. Waiting for CDP to become ready...'
 $ready = $false
 for ($i = 1; $i -le 15; $i++) {
     try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 2
+        $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$CdpPort/json/version" -UseBasicParsing -TimeoutSec 2
         if ($resp.StatusCode -eq 200) { $ready = $true; break }
     } catch { }
     Start-Sleep -Seconds 1
