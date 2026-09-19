@@ -30,6 +30,7 @@ import { takeScreenshot } from './utils/screenshots.js';
 import { FlowError } from './utils/errors.js';
 import { schemas, parseOrThrow } from './utils/validate.js';
 import { getUniverse, loadCatalog } from './utils/models.js';
+import { runRetentionSweep } from './utils/file-manager.js';
 import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
 
 const TOOL_DEFINITIONS = [
@@ -328,6 +329,9 @@ async function handleToolCall(name, args) {
           logger.debug('Connect-time model discovery skipped', { error: e.message });
         }
       }
+      // P2-4: prune disposable debug trails (logs/screenshots/metadata only —
+      // never user assets). Best-effort inside, never throws, never blocks.
+      runRetentionSweep();
       if (oauthRequired) {
         return { content: [{ type: 'text', text: JSON.stringify({
           status: 'oauth_required',

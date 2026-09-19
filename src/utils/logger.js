@@ -60,6 +60,10 @@ function writeLine(line) {
   }
 }
 
+export function getLogDir() {
+  return LOG_DIR;
+}
+
 export function closeLogger() {
   return new Promise((resolve) => {
     if (!logStream) return resolve();

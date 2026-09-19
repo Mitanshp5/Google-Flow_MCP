@@ -26,6 +26,10 @@ export function sanitizeFileName(name, fallback = 'shot') {
   return cleaned || fallback;
 }
 
+export function getScreenshotDir() {
+  return screenshotDir();
+}
+
 export async function takeScreenshot(page, name) {
   try {
     const dir = screenshotDir();
