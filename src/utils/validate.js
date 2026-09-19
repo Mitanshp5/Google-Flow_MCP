@@ -44,7 +44,6 @@ export const schemas = {
     ratio: z.string().trim().max(16).optional(),
     reference_images: z.array(z.string().max(1024)).max(8).optional(),
     ingredients: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
-    brand: z.string().trim().max(50).optional(),
     project_name: z.string().trim().max(200).optional(),
     campaign: z.string().trim().max(200).optional(),
     quantity: z.number().int().min(1).max(4).optional(),
