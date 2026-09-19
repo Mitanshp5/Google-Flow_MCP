@@ -176,20 +176,24 @@ async function panelHandle(page) {
  * carries the model row (menu-trigger); the dropdown never does. Returns
  * null unless a validated panel appears in time.
  */
-async function awaitSettingsPanel(page, timeoutMs = 4000) {
+async function awaitSettingsPanel(page, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const handle = await panelHandle(page);
       if (handle) {
-        const valid = await page.evaluate((root) => {
+        // Container AND content: the shell renders before its rows over CDP,
+        // and an empty shell scans as all-false (calibrated live).
+        const ready = await page.evaluate((root) => {
           try {
-            return !!root.querySelector('button.mat-mdc-menu-trigger, [class*="menu-trigger"]');
+            if (!root.querySelector('button.mat-mdc-menu-trigger, [class*="menu-trigger"]')) return false;
+            return Array.from(root.querySelectorAll('button')).some((b) =>
+              /nano|banana|imagen|veo|omni/i.test(b.textContent || ''));
           } catch {
             return false;
           }
         }, handle).catch(() => false);
-        if (valid) return handle;
+        if (ready) return handle;
       }
     } catch { /* retry */ }
     await page.waitForTimeout(500).catch(() => {});
