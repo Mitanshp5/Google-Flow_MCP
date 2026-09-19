@@ -101,10 +101,11 @@ log "Profile: $PROFILE"
   --disable-extensions \
   --disable-sync \
   --disable-features=ChromeWhatsNewUI \
-  --disable-background-networking \
   --disable-component-update \
   --disable-sync-preferences \
   &
+# NOTE: do NOT add --disable-background-networking — it prevents the DevTools
+# server from starting, so :9222/json/version never responds.
 
 CHROME_PID=$!
 log "Chrome launched (PID: $CHROME_PID)"

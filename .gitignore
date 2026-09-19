@@ -16,3 +16,4 @@ scripts/inspect-character-rename.js
 scripts/test-mention-reference.mjs
 ui_ss/
 dist/
+AUDIT_LOG.untracked.md

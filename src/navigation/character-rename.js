@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
+import { pressSelectAll } from '../browser/safe-actions.js';
 
 /**
  * After a character is created, Flow navigates to
@@ -53,13 +54,19 @@ export async function renameCharacterTitle(page, newName) {
       await el.click({ clickCount: 3 });
       await page.waitForTimeout(400);
 
-      await page.keyboard.press('Control+a');
+      await pressSelectAll(page);
       await page.waitForTimeout(100);
       await page.keyboard.type(newName, { delay: 30 });
       await page.keyboard.press('Enter');
       await page.waitForTimeout(600);
 
-      logger.info('Character renamed via heading', { newName, selector: sel });
+      // Read back to verify the rename actually applied.
+      const after = await page.evaluate(() => document.body?.innerText?.slice(0, 4000) || '').catch(() => '');
+      if (after && after.includes(newName)) {
+        logger.info('Character renamed via heading (verified)', { newName, selector: sel });
+        return true;
+      }
+      logger.info('Character rename attempted via heading (unverified)', { newName, selector: sel });
       return true;
     } catch { /* try next */ }
   }

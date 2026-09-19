@@ -38,17 +38,20 @@
     "start-browser": "node scripts/run.js start-browser",
     "start-mcp": "node scripts/run.js start-mcp",
     "register": "node scripts/run.js register",
-    "test": "node scripts/run.js test-flow-image"
+    "test": "vitest run",
+    "test:smoke": "node scripts/run.js test-flow-image",
+    "typecheck": "node --check src/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.9.0",
-    "playwright": "^1.51.0",
-    "zod": "^3.24.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "playwright": "^1.63.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2",
+    "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.11.0"
   }
 }

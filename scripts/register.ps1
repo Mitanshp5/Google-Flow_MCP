@@ -22,7 +22,10 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir  = Split-Path -Parent $ScriptDir
-$ServerEntry = Join-Path $ProjectDir 'src\index.js'
+$DistEntry   = Join-Path $ProjectDir 'dist\index.js'
+$SrcEntry    = Join-Path $ProjectDir 'src\index.js'
+# Prefer the built entry (what package.json ships); fall back to src for dev.
+$ServerEntry = if (Test-Path $DistEntry) { $DistEntry } else { $SrcEntry }
 
 function Write-Log {
     param([string]$Message)

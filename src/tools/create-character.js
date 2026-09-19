@@ -4,10 +4,12 @@ import { jobQueue } from '../queue/job-queue.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { get } from '../utils/config.js';
-import { detectPageElements } from '../browser/safe-actions.js';
+import { detectPageElements, pressSelectAll, ensureManualMode } from '../browser/safe-actions.js';
 import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 import { renameCharacterTitle } from '../navigation/character-rename.js';
+import { escapeRegExp, resolveSafePath } from '../utils/sanitize.js';
+import fs from 'fs';
 
 export async function handleCreateCharacter(args) {
   const job = jobQueue.createJob('create_character', {
@@ -25,6 +27,13 @@ export async function handleCreateCharacter(args) {
       name: args.project_name,
       campaign: args.campaign,
     });
+
+    // Agent mode hijacks the prompt box — turn it OFF every run, verified.
+    try {
+      await ensureManualMode(page);
+    } catch (e) {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
+    }
 
     // Navigate to the Characters sidebar section
     // (this is a project-scoped page: /project/{id}/characters — when the
@@ -108,18 +117,37 @@ export async function handleCreateCharacter(args) {
       : (args.reference_image ? [args.reference_image] : []);
 
     if (refImages.length > 0) {
-      const fileLocator = page.locator('input[type="file"]').first();
-      if (await fileLocator.isVisible().catch(() => false)) {
-        await fileLocator.setInputFiles(refImages);
-        await page.waitForTimeout(2000);
-        logger.info('Reference image(s) uploaded', { count: refImages.length });
+      const resolved = [];
+      for (const p of refImages) {
+        try {
+          const abs = resolveSafePath(p);
+          if (!fs.existsSync(abs)) {
+            logger.warn('Reference image not found, skipping', { path: p });
+            continue;
+          }
+          resolved.push(abs);
+        } catch (e) {
+          logger.warn('Invalid reference image path, skipping', { path: String(p).slice(0, 120), error: e.message });
+        }
+      }
+      if (resolved.length > 0) {
+        // File inputs are usually hidden — do NOT gate on isVisible().
+        const fileLocator = page.locator('input[type="file"]').first();
+        try {
+          await fileLocator.setInputFiles(resolved);
+          await page.waitForTimeout(2000);
+          logger.info('Reference image(s) uploaded', { count: resolved.length });
+        } catch (e) {
+          logger.warn('Reference image upload failed', { error: e.message });
+        }
       }
     }
 
-    // Try to select model
+    // Try to select model (escaped exact match — no selector injection)
     if (args.model) {
       try {
-        const modelLocator = page.locator(`button:has-text("${args.model}")`).first();
+        const modelLocator = page.locator('button')
+          .filter({ hasText: new RegExp(`^${escapeRegExp(args.model)}$`, 'i') }).first();
         if (await modelLocator.isVisible().catch(() => false)) {
           await modelLocator.click();
           await page.waitForTimeout(500);
@@ -163,9 +191,10 @@ export async function handleCreateCharacter(args) {
 
     // Find the submit button — try aria-label first, then JS evaluation to find
     // a button near the text input that looks like a send/submit button.
+    // NOTE: The arrow button uses a Material icon FONT GLYPH (U+E5C8), NOT text —
+    // do NOT match button:has-text("arrow_forward").
     let submitBtn = null;
     const submitSelectors = [
-      'button:has-text("arrow_forward")',
       'button[aria-label*="Create character" i]',
       'button[aria-label*="create" i]',
       'button:has-text("Create")',

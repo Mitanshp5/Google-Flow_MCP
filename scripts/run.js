@@ -27,18 +27,31 @@ let cmd;
 let args;
 
 if (isWin) {
+  // Prefer pwsh (PowerShell 7) when available, fall back to Windows PowerShell.
   cmd = 'powershell';
   args = ['-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...extraArgs];
+  try {
+    const { execSync } = await import('child_process');
+    execSync('pwsh -NoProfile -Command "$PSVersionTable.PSVersion"', { stdio: 'ignore' });
+    cmd = 'pwsh';
+  } catch { /* keep Windows PowerShell */ }
 } else {
   cmd = 'bash';
   args = [scriptPath, ...extraArgs];
 }
 
-console.log(`[runner] Executing: ${cmd} ${args.join(' ')}`);
+console.log(`[runner] Executing: ${cmd} ${args.map(a => (a.includes(' ') ? `"${a}"` : a)).join(' ')}`);
 
 const child = spawn(cmd, args, {
   stdio: 'inherit'
 });
+
+// Forward signals so Ctrl+C stops the child (Chrome/MCP) cleanly.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.once(sig, () => {
+    try { child.kill(sig); } catch { /* ignore */ }
+  });
+}
 
 child.on('error', (err) => {
   console.error(`[runner] Failed to start process:`, err);

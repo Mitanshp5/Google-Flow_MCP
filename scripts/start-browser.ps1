@@ -89,8 +89,10 @@ $chromeArgs = @(
     '--disable-extensions',
     '--disable-sync',
     '--disable-features=ChromeWhatsNewUI',
-    '--disable-background-networking',
     '--disable-component-update'
+    # NOTE: do NOT add --disable-background-networking — it prevents the
+    # DevTools server from starting, so :9222/json/version never responds
+    # (verified: minimal flags open CDP in ~2s, full set never binds).
 )
 
 Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs

@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { takeScreenshot } from '../utils/screenshots.js';
+import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { listMentionOptions } from '../navigation/mentions.js';
 
@@ -33,11 +34,10 @@ export async function handleListMentionOptions(args = {}) {
 
   if (!promptInput) {
     await takeScreenshot(page, 'no-prompt-input-for-mentions');
-    return {
-      status: 'error',
-      message: 'Could not find a prompt input to open the @ reference popup from.',
-      screenshot: await takeScreenshot(page, 'list-mentions-error'),
-    };
+    throw new FlowError(
+      ErrorCodes.UNKNOWN_UI_CHANGE,
+      'Could not find a prompt input to open the @ reference popup from.'
+    );
   }
 
   const names = await listMentionOptions(page, promptInput);

@@ -1,140 +1,182 @@
 {
   "_description": "UI selectors map for Google Flow. Discovered via flow_discover_ui. Update when Flow UI changes.",
-  "_lastUpdated": "2026-05-31T03:01:18.043Z",
+  "_lastUpdated": "2026-09-19T11:57:33.595Z",
   "main": {
-    "url": "https://labs.google/fx/tools/flow",
-    "title": "Flow",
-    "discoveredAt": "2026-05-31T03:01:18.043Z",
+    "url": "https://flow.google.com/project/e9e6d7d3-4a2e-4789-a24c-ea03fb1c2b74",
+    "title": "Google Flow - Sep 18 - 15:43",
+    "discoveredAt": "2026-09-18T10:20:21.375Z",
     "selectors": {
       "buttons": [
         {
-          "text": "help_outlinedCentre d'aide FlowCentre d'aide Flow",
+          "text": "home",
           "visible": true,
           "tag": "BUTTON",
-          "ariaLabel": null,
+          "ariaLabel": "Home",
           "dataTestId": null
         },
         {
           "text": "more_vert",
           "visible": true,
-          "tag": "I",
-          "ariaLabel": null,
+          "tag": "BUTTON",
+          "ariaLabel": "More options for the project",
           "dataTestId": null
         },
         {
-          "text": "PRO",
+          "text": "search",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Search",
+          "dataTestId": null
+        },
+        {
+          "text": "filter_list",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Filtering and sorting options",
+          "dataTestId": null
+        },
+        {
+          "text": "add",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Add media menu",
+          "dataTestId": null
+        },
+        {
+          "text": "help",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Product help",
+          "dataTestId": null
+        },
+        {
+          "text": "settings_2",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Tile grid settings",
+          "dataTestId": null
+        },
+        {
+          "text": "more_vert",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "More options",
+          "dataTestId": null
+        },
+        {
+          "text": "Account details",
+          "visible": true,
+          "tag": "DIV",
+          "ariaLabel": "Account details",
+          "dataTestId": null
+        },
+        {
+          "text": "Google Account: Mitansh Prajapati  \n(mitanshquotes@gmail.com)",
+          "visible": true,
+          "tag": "A",
+          "ariaLabel": "Google Account: Mitansh Prajapati  \n(mitanshquotes@gmail.com)",
+          "dataTestId": null
+        },
+        {
+          "text": "menu",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Open session history",
+          "dataTestId": null
+        },
+        {
+          "text": "edit_square",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Start new session",
+          "dataTestId": null
+        },
+        {
+          "text": "close",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Close",
+          "dataTestId": null
+        },
+        {
+          "text": "Edit a video with Omni",
           "visible": true,
           "tag": "BUTTON",
           "ariaLabel": null,
           "dataTestId": null
         },
         {
-          "text": "closeFermerFermer",
+          "text": "Create a few versions of an image",
           "visible": true,
           "tag": "BUTTON",
           "ariaLabel": null,
           "dataTestId": null
         },
         {
-          "text": "Try Omni now",
+          "text": "Show me the keyboard shortcuts",
           "visible": true,
           "tag": "BUTTON",
           "ariaLabel": null,
           "dataTestId": null
         },
         {
-          "text": "Accéder à la bannière 1",
+          "text": "add",
           "visible": true,
           "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 1",
+          "ariaLabel": "Add ingredients to the prompt box",
           "dataTestId": null
         },
         {
-          "text": "Accéder à la bannière 2",
+          "text": "article_spark",
           "visible": true,
           "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 2",
+          "ariaLabel": "Agent instructions",
           "dataTestId": null
         },
         {
-          "text": "Accéder à la bannière 3",
+          "text": "tune",
           "visible": true,
           "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 3",
+          "ariaLabel": "Settings",
           "dataTestId": null
         },
         {
-          "text": "Accéder à la bannière 4",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 4",
-          "dataTestId": null
-        },
-        {
-          "text": "Accéder à la bannière 5",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 5",
-          "dataTestId": null
-        },
-        {
-          "text": "Accéder à la bannière 6",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": "Accéder à la bannière 6",
-          "dataTestId": null
-        },
-        {
-          "text": "editModifier le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "deleteSupprimer le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "editModifier le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "deleteSupprimer le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "editModifier le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "deleteSupprimer le projet",
-          "visible": true,
-          "tag": "BUTTON",
-          "ariaLabel": null,
-          "dataTestId": null
-        },
-        {
-          "text": "add_2Nouveau projet",
+          "text": "Settings trigger",
           "visible": false,
           "tag": "BUTTON",
-          "ariaLabel": null,
+          "ariaLabel": "Settings trigger",
+          "dataTestId": null
+        },
+        {
+          "text": "arrow_forward",
+          "visible": true,
+          "tag": "BUTTON",
+          "ariaLabel": "Start generation",
           "dataTestId": null
         }
       ],
       "inputs": [
+        {
+          "placeholder": "",
+          "ariaLabel": "Editable text",
+          "name": "",
+          "type": "text",
+          "visible": true
+        },
+        {
+          "placeholder": "",
+          "ariaLabel": "Search",
+          "name": "",
+          "type": "text",
+          "visible": true
+        },
+        {
+          "placeholder": "",
+          "ariaLabel": "",
+          "name": "",
+          "type": "DIV",
+          "visible": true
+        },
         {
           "placeholder": "",
           "ariaLabel": "",
@@ -145,33 +187,34 @@
       ],
       "links": [
         {
-          "text": "Flow",
-          "href": "/fx/fr/tools/flow",
+          "text": "Skip to main content",
+          "href": "#main-content",
           "visible": true
         },
         {
-          "text": "tvFlow TV",
-          "href": "https://labs.google/flow/tv",
+          "text": "apps_spark_2Tools",
+          "href": "/project/e9e6d7d3-4a2e-4789-a24c-ea03fb1c2b74/tools",
           "visible": true
         }
       ],
       "headings": [
         {
           "level": "H2",
-          "text": "Introducing Gemini Omni Flash"
+          "text": "Untitled session"
+        },
+        {
+          "level": "H3",
+          "text": "Hi Mitansh"
+        },
+        {
+          "level": "H3",
+          "text": "What would you like to create?"
         }
       ],
       "modelTexts": [
-        "For a limited time, explore Gemini Omni Flash for 50% fewer credits. Ends 6/1.",
-        "Introducing Gemini Omni Flash",
-        "Try Omni now"
+        "Edit a video with Omni"
       ],
-      "ratioTexts": [
-        "Cinematic realism, powerful editing, world knowledge: try our latest video generation model! For a limited time, explore the new model for 50% fewer credits. Ends 6/1.",
-        "31 mai, 04:58",
-        "31 mai, 04:45",
-        "31 mai, 04:44"
-      ]
+      "ratioTexts": []
     }
   },
   "imageGeneration": {

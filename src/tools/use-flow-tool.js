@@ -1,16 +1,20 @@
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
-import { takeScreenshot } from '../utils/screenshots.js';
+import { takeScreenshot, sanitizeFileName } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';
+import { FlowError, ErrorCodes } from '../utils/errors.js';
+import { get } from '../utils/config.js';
+import { escapeRegExp } from '../utils/sanitize.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 
 export async function handleUseFlowTool(args) {
   const page = getPage();
   const toolName = args.tool_name || args.name;
 
-  if (!toolName) {
-    throw new Error('Tool name is required');
+  if (!toolName || typeof toolName !== 'string' || !toolName.trim()) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'Tool name is required');
   }
+  const safeName = toolName.trim().slice(0, 100);
 
   await ensureProjectInContext(page, {
     name: args.project_name,
@@ -21,19 +25,19 @@ export async function handleUseFlowTool(args) {
   await navigateToSidebar(page, 'Tools');
   await page.waitForTimeout(2000);
 
-  // Find the tool in the tools section
-  const toolLocator = page.locator(
-    `a:has-text("${toolName}"), button:has-text("${toolName}"), text="${toolName}"`
-  ).first();
+  // Find the tool in the tools section (escaped exact match — no injection)
+  const toolLocator = page.locator('a, button')
+    .filter({ hasText: new RegExp(`^${escapeRegExp(safeName)}$`, 'i') }).first();
 
   if (await toolLocator.isVisible().catch(() => false)) {
     await toolLocator.click();
     await page.waitForTimeout(3000);
   } else {
-    // Fallback: try direct URL
-    const toolSlug = toolName.toLowerCase().replace(/\s+/g, '-');
-    const toolUrl = `https://labs.google/fx/tools/flow/tools/${toolSlug}`;
-    await page.goto(toolUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    // Fallback: try direct URL (sanitized slug)
+    const toolSlug = safeName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'grid-architect';
+    const base = get('flowUrl', 'https://flow.google.com/').replace(/\/+$/, '');
+    const toolUrl = `${base}/tools/${toolSlug}`;
+    await page.goto(toolUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(2000);
   }
 
@@ -55,13 +59,15 @@ export async function handleUseFlowTool(args) {
     }
   }
 
-  await takeScreenshot(page, `tool-${toolName.replace(/\s/g, '-')}-setup`);
+  const shotBase = sanitizeFileName(`tool-${safeName}`);
+
+  await takeScreenshot(page, `${shotBase}-setup`);
 
   return {
     status: 'tool_opened',
-    tool: toolName,
+    tool: safeName,
     url: page.url(),
     elements,
-    screenshot: await takeScreenshot(page, `tool-${toolName.replace(/\s/g, '-')}`),
+    screenshot: await takeScreenshot(page, shotBase),
   };
 }

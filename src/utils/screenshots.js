@@ -3,22 +3,39 @@ import fs from 'fs';
 import { getFlowHome } from './config.js';
 import { logger } from './logger.js';
 
-const SCREENSHOT_DIR = path.join(getFlowHome(), 'screenshots-debug');
+function screenshotDir() {
+  return path.join(getFlowHome(), 'screenshots-debug');
+}
 
-function ensureDir() {
-  if (!fs.existsSync(SCREENSHOT_DIR)) {
-    fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+}
+
+export function sanitizeFileName(name, fallback = 'shot') {
+  const base = String(name ?? fallback).trim() || fallback;
+  // Strip path separators, traversal, Windows-reserved chars; cap length.
+  const cleaned = base
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/\.\./g, '-')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 80);
+  return cleaned || fallback;
 }
 
 export async function takeScreenshot(page, name) {
   try {
-    ensureDir();
+    const dir = screenshotDir();
+    ensureDir(dir);
+    const safe = sanitizeFileName(name);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `${timestamp}_${name}.png`;
-    const filepath = path.join(SCREENSHOT_DIR, filename);
+    const filename = `${timestamp}_${safe}.png`;
+    const filepath = path.join(dir, filename);
     await page.screenshot({ path: filepath, fullPage: false });
-    logger.info('Screenshot saved', { name, path: filepath });
+    logger.info('Screenshot saved', { name: safe, path: filepath });
     return filepath;
   } catch (err) {
     logger.warn('Failed to take screenshot', { name, error: err.message });
@@ -27,10 +44,25 @@ export async function takeScreenshot(page, name) {
 }
 
 export function getLatestScreenshot(namePattern) {
-  if (!fs.existsSync(SCREENSHOT_DIR)) return null;
-  const files = fs.readdirSync(SCREENSHOT_DIR)
-    .filter(f => f.includes(namePattern))
-    .map(f => path.join(SCREENSHOT_DIR, f))
-    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-  return files[0] || null;
+  const dir = screenshotDir();
+  if (!fs.existsSync(dir)) return null;
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter(f => f.includes(namePattern));
+  } catch {
+    return null;
+  }
+  let best = null;
+  let bestMtime = -1;
+  for (const f of files) {
+    try {
+      const full = path.join(dir, f);
+      const mtime = fs.statSync(full).mtimeMs;
+      if (mtime > bestMtime) {
+        bestMtime = mtime;
+        best = full;
+      }
+    } catch { /* file deleted mid-scan — ignore */ }
+  }
+  return best;
 }

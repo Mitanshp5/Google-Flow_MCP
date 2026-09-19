@@ -3,16 +3,25 @@ import { logger } from '../utils/logger.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { get } from '../utils/config.js';
 
-const JOB_TIMEOUT = get('jobTimeoutMs', 300000);
+function jobTimeoutMs() {
+  return get('jobTimeoutMs', 300000);
+}
+
+function maxHistory() {
+  return get('jobHistoryLimit', 50);
+}
 
 /**
  * Simple single-job queue. Only one job can run at a time.
+ * Enforces JOB_TIMEOUT via watchdog; keeps bounded history.
  */
 class JobQueue {
   constructor() {
     this.currentJob = null;
     this.jobs = new Map();
+    this.history = [];
     this.listeners = new Map();
+    this.timers = new Map();
   }
 
   generateId() {
@@ -24,10 +33,10 @@ class JobQueue {
    * Throws JOB_IN_PROGRESS if another job is already active.
    */
   createJob(type, params = {}) {
-    if (this.currentJob && this.currentJob.status === 'running') {
+    if (this.currentJob && (this.currentJob.status === 'running' || this.currentJob.status === 'queued')) {
       throw new FlowError(
         ErrorCodes.JOB_IN_PROGRESS,
-        `A job is already in progress: ${this.currentJob.id} (${this.currentJob.type}). Wait for it to complete.`,
+        `A job is already in progress: ${this.currentJob.id} (${this.currentJob.type}). Wait for it to complete or call flow_queue_reset.`,
         { currentJobId: this.currentJob.id }
       );
     }
@@ -53,11 +62,44 @@ class JobQueue {
     return job;
   }
 
+  armWatchdog(id) {
+    this.clearWatchdog(id);
+    const timeout = jobTimeoutMs();
+    if (!Number.isFinite(timeout) || timeout <= 0) return;
+    const t = setTimeout(() => {
+      const job = this.jobs.get(id);
+      if (job && job.status === 'running' && this.currentJob?.id === id) {
+        logger.error('Job timed out via watchdog', { jobId: id, timeoutMs: timeout });
+        this.failJob(id, new FlowError(
+          ErrorCodes.GENERATION_TIMEOUT,
+          `Job ${id} timed out after ${timeout}ms. Call flow_queue_reset if the queue stays blocked.`
+        ));
+      }
+    }, timeout);
+    // Don't keep the process alive just for the watchdog.
+    t.unref?.();
+    this.timers.set(id, t);
+  }
+
+  clearWatchdog(id) {
+    const t = this.timers.get(id);
+    if (t) {
+      clearTimeout(t);
+      this.timers.delete(id);
+    }
+  }
+
   startJob(id) {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`Job not found: ${id}`);
+    if (this.currentJob && this.currentJob.id !== id &&
+      (this.currentJob.status === 'running' || this.currentJob.status === 'queued')) {
+      throw new FlowError(ErrorCodes.JOB_IN_PROGRESS, `Another job is active: ${this.currentJob.id}`);
+    }
     job.status = 'running';
     job.startedAt = new Date().toISOString();
+    this.currentJob = job;
+    this.armWatchdog(id);
     this.emit('start', job);
     return job;
   }
@@ -65,11 +107,17 @@ class JobQueue {
   completeJob(id, result) {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`Job not found: ${id}`);
+    if (this.currentJob && this.currentJob.id !== id) {
+      logger.warn('completeJob for non-current job ignored', { jobId: id, current: this.currentJob.id });
+      return job;
+    }
     job.status = 'completed';
     job.completedAt = new Date().toISOString();
     job.result = result;
     job.progress = 100;
-    this.currentJob = null;
+    if (this.currentJob?.id === id) this.currentJob = null;
+    this.clearWatchdog(id);
+    this.pushHistory(job);
     this.emit('complete', job);
     logger.info('Job completed', { jobId: id, type: job.type });
     return job;
@@ -81,13 +129,41 @@ class JobQueue {
       logger.error('Cannot fail unknown job', { jobId: id });
       return null;
     }
+    if (this.currentJob && this.currentJob.id !== id && job.status !== 'running' && job.status !== 'queued') {
+      logger.warn('failJob for non-active job ignored', { jobId: id });
+      return job;
+    }
     job.status = 'failed';
     job.completedAt = new Date().toISOString();
     job.error = error instanceof Error ? { message: error.message, code: error.code, stack: error.stack } : { message: String(error) };
-    this.currentJob = null;
+    if (this.currentJob?.id === id) this.currentJob = null;
+    this.clearWatchdog(id);
+    this.pushHistory(job);
     this.emit('failed', job);
     logger.error('Job failed', { jobId: id, type: job.type, error: job.error.message });
     return job;
+  }
+
+  pushHistory(job) {
+    this.history.unshift({
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      error: job.error?.message || null,
+    });
+    const cap = maxHistory();
+    if (this.history.length > cap) this.history.length = cap;
+    // Bound the jobs map too (keep current + history).
+    if (this.jobs.size > cap + 5) {
+      const keep = new Set(this.history.map(h => h.id));
+      if (this.currentJob) keep.add(this.currentJob.id);
+      for (const key of [...this.jobs.keys()]) {
+        if (!keep.has(key)) this.jobs.delete(key);
+      }
+    }
   }
 
   setManualAction(id) {
@@ -112,12 +188,20 @@ class JobQueue {
   }
 
   reset() {
+    // Fail the active job so waiters/listeners don't hang, then clear.
+    if (this.currentJob && (this.currentJob.status === 'running' || this.currentJob.status === 'queued')) {
+      try {
+        this.failJob(this.currentJob.id, new Error('Job queue was forcefully reset'));
+      } catch { /* ignore */ }
+    }
+    for (const id of [...this.timers.keys()]) this.clearWatchdog(id);
     this.currentJob = null;
     this.jobs.clear();
     logger.info('Job queue has been forcibly reset.');
   }
 
-  getStatus() {
+  getStatus(historyLimit = 5) {
+    const limit = Math.min(Math.max(Number(historyLimit) || 5, 1), 100);
     return {
       hasActiveJob: this.currentJob?.status === 'running' || this.currentJob?.status === 'queued',
       currentJob: this.currentJob ? {
@@ -128,6 +212,8 @@ class JobQueue {
         createdAt: this.currentJob.createdAt,
       } : null,
       totalJobs: this.jobs.size,
+      history: this.history.slice(0, limit),
+      jobTimeoutMs: jobTimeoutMs(),
     };
   }
 

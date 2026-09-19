@@ -60,10 +60,16 @@ async function findVisible(page, selectors) {
 
 /**
  * Type "@" at the end of the given input to open Flow's asset-picker panel.
- * Returns { searchInput } if the panel opened, or null if it didn't
- * (and removes the stray "@" in that case).
+ * Returns { searchInput } if the panel opened, or null if it didn't.
+ * On failure, restores the input to its original text (no data loss).
  */
 export async function openMentionPopup(page, inputLocator) {
+  // Snapshot current text so we can restore it if the panel fails to open.
+  let before = null;
+  try {
+    before = await inputLocator.textContent().catch(() => null)
+      ?? await inputLocator.inputValue?.().catch(() => null);
+  } catch { /* ignore */ }
   await inputLocator.click();
   await page.keyboard.press('End');
   await page.keyboard.type('@', { delay: 30 });
@@ -73,7 +79,25 @@ export async function openMentionPopup(page, inputLocator) {
   const addBtn = await findVisible(page, ADD_TO_PROMPT_SELECTORS);
 
   if (!searchInput && !addBtn) {
-    await page.keyboard.press('Backspace');
+    // Panel didn't open — remove ONLY the "@" we just typed, without
+    // touching user text. Prefer Escape + selective delete over Backspace
+    // (Backspace on failure previously deleted the last prompt char).
+    await page.keyboard.press('Escape').catch(() => {});
+    try {
+      // If the input ends with "@", delete exactly one char; otherwise restore.
+      const after = await inputLocator.textContent().catch(() => null);
+      if (typeof after === 'string' && typeof before === 'string' && after === `${before}@`) {
+        await page.keyboard.press('Backspace');
+      } else if (typeof before === 'string' && typeof after === 'string' && after !== before) {
+        // Best-effort restore via select-all + retype (only when we have a snapshot).
+        await inputLocator.click().catch(() => {});
+        await page.keyboard.press('End').catch(() => {});
+        // Do not attempt destructive restore for contenteditable with chips — just remove trailing @.
+        if (after.endsWith('@') && !before.endsWith('@')) {
+          await page.keyboard.press('Backspace');
+        }
+      }
+    } catch { /* non-fatal */ }
     return null;
   }
 
@@ -82,14 +106,23 @@ export async function openMentionPopup(page, inputLocator) {
 
 /**
  * Close the asset-picker panel (if open) and remove the trailing "@" left
- * in the prompt input.
+ * in the prompt input — but only if it is actually a trailing "@".
  */
 export async function closeMentionPopup(page, inputLocator) {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
   if (inputLocator) {
+    try {
+      const text = await inputLocator.textContent().catch(() => null);
+      if (typeof text === 'string' && !text.endsWith('@')) return;
+    } catch { /* fall through to single backspace guard below */ }
     await inputLocator.click().catch(() => {});
-    await page.keyboard.press('End');
+    await page.keyboard.press('End').catch(() => {});
+    // Re-check after focus — only delete when trailing @ is present.
+    try {
+      const text2 = await inputLocator.textContent().catch(() => null);
+      if (typeof text2 === 'string' && !text2.endsWith('@')) return;
+    } catch { return; }
   }
   await page.keyboard.press('Backspace');
 }
@@ -164,19 +197,9 @@ export async function insertMentionReference(page, inputLocator, name) {
     }
   }
 
-  // Fallback: names are often truncated ("Cat wearing space suit fl...")
-  // — if no exact match, click the first visible result row.
-  if (!itemClicked) {
-    for (const sel of RESULT_ITEM_SELECTORS) {
-      const item = page.locator(sel).first();
-      if (await item.isVisible().catch(() => false)) {
-        await item.click();
-        itemClicked = true;
-        logger.warn('No exact match, clicked first result row', { name, selector: sel });
-        break;
-      }
-    }
-  }
+  // FAIL CLOSED: never click the first row as a fallback. Names are truncated
+  // ("Cat wearing space suit fl...") but clicking an unrelated asset would
+  // insert the wrong paid reference. Return false so the caller can warn.
 
   if (!itemClicked) {
     await takeScreenshot(page, 'mention-item-not-found');
@@ -231,6 +254,8 @@ export async function insertMentionReference(page, inputLocator, name) {
 
 /**
  * Insert multiple "@name" references in sequence into the given input.
+ * Each insert is READ BACK: the input must contain the name afterwards,
+ * else it counts as failed (never silently assume success).
  * Returns { inserted: string[], failed: string[] }.
  */
 export async function insertMentionReferences(page, inputLocator, names = []) {
@@ -239,7 +264,27 @@ export async function insertMentionReferences(page, inputLocator, names = []) {
   for (const name of names) {
     if (!name) continue;
     const ok = await insertMentionReference(page, inputLocator, name);
-    if (ok) inserted.push(name); else failed.push(name);
+    if (!ok) {
+      failed.push(name);
+      continue;
+    }
+    // Read-back: name (or its chip) must be present in the input now.
+    await page.waitForTimeout(300);
+    const after = await inputLocator.textContent().catch(() => '')
+      || await inputLocator.inputValue().catch(() => '');
+    if (after && after.includes(name)) {
+      inserted.push(name);
+    } else {
+      // Chip may render truncated — accept first-word match as fallback.
+      const head = String(name).split(/\s+/)[0];
+      if (head.length > 2 && after && after.includes(head)) {
+        logger.info('Mention verified via truncated chip text', { name, head });
+        inserted.push(name);
+      } else {
+        logger.warn('Mention insert unverified by read-back', { name, actualHead: String(after).slice(0, 80) });
+        failed.push(name);
+      }
+    }
   }
   return { inserted, failed };
 }

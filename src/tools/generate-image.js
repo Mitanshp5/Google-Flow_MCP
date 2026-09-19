@@ -7,33 +7,43 @@ import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
-import { configureGenerationUI } from '../browser/safe-actions.js';
+import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState } from '../browser/safe-actions.js';
+import { resolveModel, getUniverse } from '../utils/models.js';
 
 function selectModel(requested) {
-  const available = get('imageModels', {});
-  if (!requested || requested === 'auto') {
-    return 'Nano Banana 2';
-  }
-  if (available[requested]) return requested;
-  return null;
+  // Dynamic universe: user config ∪ live discovery ∪ fallback — no frozen list.
+  const r = resolveModel(requested, 'image');
+  return r ? r.name : null;
+}
+
+function availableImageModels() {
+  return getUniverse().imageModels;
 }
 
 function selectRatio(requested) {
-  const ratios = get('ratios', []);
-  if (!requested || ratios.includes(requested)) {
-    return requested || '16:9';
+  const ratios = getUniverse().ratios;
+  if (!requested || ratios.map(r => r.toLowerCase()).includes(String(requested).toLowerCase())) {
+    return requested || get('defaultRatio', '16:9');
   }
   return null;
 }
 
 export async function handleGenerateImage(args) {
+  if (!args || typeof args.prompt !== 'string' || !args.prompt.trim()) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'prompt is required and must be a non-empty string');
+  }
+  const prompt = args.prompt.trim();
+  if (prompt.length > 8000) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'prompt must be ≤ 8000 characters');
+  }
+  const qty = Math.min(Math.max(Number(args.quantity) || 1, 1), 4);
   const autoConfirm = args.auto_confirm === true;
   const job = jobQueue.createJob('image_generation', {
-    prompt: args.prompt,
+    prompt,
     model: args.model || 'auto',
     ratio: args.ratio || '16:9',
     auto_confirm: autoConfirm,
-    quantity: args.quantity || 1,
+    quantity: qty,
     outputFolder: args.output_folder,
     useCharacter: args.use_character,
     useScene: args.use_scene,
@@ -53,28 +63,34 @@ export async function handleGenerateImage(args) {
       campaign: args.campaign,
     });
 
-    // STEP 2: Model selection (config-level, before UI interaction)
+    // Agent mode hijacks the prompt box — turn it OFF every run, verified.
+    try {
+      await ensureManualMode(page);
+    } catch (e) {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
+    }
+
+    // STEP 2: Model selection (dynamic universe, before UI interaction)
     const model = selectModel(args.model);
     if (!model) {
-      const available = Object.keys(get('imageModels', {}));
+      const available = availableImageModels();
       throw new FlowError(ErrorCodes.MODEL_NOT_AVAILABLE,
-        `Model "${args.model}" not available. Available: ${available.join(', ')}`,
+        `Model "${args.model}" not available. Available: ${available.join(', ')} (or auto; refresh via flow_list_models)`,
         { requested: args.model, available });
     }
     logger.info('Using model', { model });
 
     // 🛡️ SAFETY: Verify model is an IMAGE model, NOT a video model
-    const imageModels = get('imageModels', {});
-    const videoModels = get('videoModels', {});
-    if (!imageModels[model]) {
+    const universe = getUniverse();
+    if (!universe.imageModels.map(m => m.toLowerCase()).includes(model.toLowerCase())) {
       throw new FlowError(ErrorCodes.MODEL_NOT_AVAILABLE,
         `🚨 SAFETY BLOCK: "${model}" is a VIDEO model, not an IMAGE model. ` +
-        `Use flow_generate_video for videos. Image models: ${Object.keys(imageModels).join(', ')}`);
+        `Use flow_generate_video for videos. Image models: ${universe.imageModels.join(', ')}`);
     }
-    if (videoModels[model]) {
+    if (universe.videoModels.map(m => m.toLowerCase()).includes(model.toLowerCase())) {
       throw new FlowError(ErrorCodes.MODEL_NOT_AVAILABLE,
         `🚨 SAFETY BLOCK: "${model}" is also a VIDEO model. ` +
-        `Refusing to generate to avoid consuming video credits. Image models: ${Object.keys(imageModels).join(', ')}`);
+        `Refusing to generate to avoid consuming video credits. Image models: ${universe.imageModels.join(', ')}`);
     }
 
     // STEP 3: Ratio selection
@@ -84,45 +100,38 @@ export async function handleGenerateImage(args) {
         `Ratio "${args.ratio}" not available. Available: ${get('ratios', []).join(', ')}`);
     }
 
-    // STEP 4: Configure the generation UI actively to prevent credit wastage
-    await configureGenerationUI({
-      mode: 'Image',
-      ratio,
-      model,
-      quantity: args.quantity || 1
-    });
+    // STEP 4: Drive the bottom prompt bar with the proven primitives
+    // (one-open batch + settings-row model verify). Warn-only in
+    // prepare-only (no spend); strict on the paid path.
+    const liveRun = autoConfirm === true;
+    const barSets = await configurePromptBar(page, { mode: 'Image', ratio, quantity: qty });
+    const modelRes = await setPromptBarModel(page, model);
+    const barAll = [...barSets, modelRes];
+    logger.info('Prompt-bar setup results', { barSets: barAll.map(s => `${s.kind}=${s.detail}`) });
+    const barFailed = barAll.filter(s => !s.ok);
+    if (barFailed.length > 0) {
+      await takeScreenshot(page, 'image-bar-setup-mismatch');
+      const msg = `Prompt-bar setup failed: ${barFailed.map(s => `${s.kind} (${s.detail})`).join('; ')}. Set them manually in Flow's bottom bar, then retry. No credits spent.`;
+      if (liveRun) throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, msg, { barSets: barAll });
+      logger.warn(`Bar setup unverified — continuing prepare-only. ${msg}`);
+    }
+    const postState = await readToolState(page);
+    logger.info('Tool state after image bar setup', postState);
 
-    // Double check model selector confirms IMAGE mode (NOT video)
-    const modelFromUI = await page.evaluate(() => {
-      const modelBtn = Array.from(document.querySelectorAll('button'))
-        .find(b => {
-          const text = b.textContent || '';
-          return (text.includes('Nano') || text.includes('Banana') ||
-                  text.includes('Omni') || text.includes('Veo') ||
-                  text.includes('Imagen')) && b.offsetParent !== null;
-        });
-      return modelBtn ? modelBtn.textContent.trim().replace(/\s+/g, ' ').substring(0, 80) : null;
-    }).catch(() => null);
-
-    if (modelFromUI) {
-      logger.info('Model selector shows:', { modelFromUI });
-      const videoModelNames = ['Omni Flash', 'Veo', 'Omni'];
-      const isVideoModel = videoModelNames.some(v => modelFromUI.includes(v));
-      if (isVideoModel) {
-        await takeScreenshot(page, 'video-model-detected');
-        throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
-          `🚨 SAFETY BLOCK: The model "${modelFromUI}" is a VIDEO model. ` +
-          `Refusing to generate to avoid consuming paid video credits. ` +
-          `Use flow_generate_video for videos.`);
-      }
-      logger.info('✅ Model selector confirms image mode');
-    } else {
-      logger.warn('Could not read model selector after configuration');
+    // SAFETY: refuse the paid click unless the UI confirms IMAGE mode
+    // (never spend video credits from the image tool).
+    if (liveRun && postState.mode !== 'image') {
+      await takeScreenshot(page, 'image-mode-unverified');
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+        `Refusing live Generate: UI is not in image mode (mode=${postState.mode}, chip=${postState.modelChip || 'none'}). Switch to Image in the bottom bar, then retry. No credits spent.`,
+        { toolState: postState });
     }
 
-    // Also verify the generate button exists (confirms the toolbar is active)
+    // Also verify the generate button exists (confirms the toolbar is active).
+    // NOTE: Flow's submit uses a Material icon glyph, not literal text —
+    // match aria-labels first, text only as fallback.
     const hasGenerateBtn = await page.locator(
-      'button:has-text("arrow_forward"), button:has-text("Generate"), button:has-text("Create")'
+      'button[aria-label*="Start generation" i], button[aria-label*="Generate" i], button[aria-label*="Create" i], button[aria-label*="Send" i], button[type="submit"], button:has-text("Generate"), button:has-text("Create")'
     ).first().isVisible().catch(() => false);
     if (!hasGenerateBtn) {
       logger.warn('Generate button not visible on project page');
@@ -157,13 +166,21 @@ export async function handleGenerateImage(args) {
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
 
-    // STEP 6: Fill the prompt
+    // STEP 6: Fill the prompt + READ BACK to verify it landed.
     await promptInput.click();
     await promptInput.fill('');
     await page.waitForTimeout(200);
-    await promptInput.type(args.prompt, { delay: 15 });
-    logger.info('Prompt filled', { promptLength: args.prompt.length });
+    await promptInput.type(prompt, { delay: 15 });
+    logger.info('Prompt filled', { promptLength: prompt.length });
     await page.waitForTimeout(500);
+    const filledText = await promptInput.textContent().catch(() => '')
+      || await promptInput.inputValue().catch(() => '');
+    if (!filledText || !filledText.includes(prompt.slice(0, 40))) {
+      await takeScreenshot(page, 'prompt-fill-unverified');
+      throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
+        'Prompt fill could not be verified in the input (read-back mismatch). Refusing to continue.',
+        { expectedHead: prompt.slice(0, 40), actualHead: String(filledText).slice(0, 80) });
+    }
 
     // Insert "@" references for any existing images/characters to use as ingredients.
     // Flow opens a popup when "@" is typed, listing project images and characters.
@@ -190,7 +207,7 @@ export async function handleGenerateImage(args) {
           'To generate and consume credits, call again with auto_confirm=true.',
         model_used: model,
         ratio,
-        prompt: args.prompt,
+        prompt,
         ingredients_inserted: mentionResults.inserted,
         ingredients_failed: mentionResults.failed,
         account: get('expectedAccount'),
@@ -207,7 +224,11 @@ export async function handleGenerateImage(args) {
 
     // STEP 8: Find generate button
     const generateBtnLocator = page.locator(
-      'button:has-text("arrow_forward"), ' +
+      'button[aria-label*="Start generation" i], ' +
+      'button[aria-label*="Generate" i], ' +
+      'button[aria-label*="Create" i], ' +
+      'button[aria-label*="Send" i], ' +
+      'button[type="submit"], ' +
       'button:has-text("Generate")'
     ).first();
     const generateBtnVisible = await generateBtnLocator.isVisible().catch(() => false);
@@ -233,7 +254,7 @@ export async function handleGenerateImage(args) {
 
     let flowMode = 'direct';
     logger.info('Checking for Agent confirmation dialog (5s window)...');
-    const acceptTimeoutMs = get('agentResponseTimeoutMs', 5000);
+    const acceptTimeoutMs = get('agentResponseTimeoutMs', get('generationPollIntervalMs', 5000));
     const acceptStart = Date.now();
 
     while (Date.now() - acceptStart < acceptTimeoutMs) {
@@ -254,8 +275,9 @@ export async function handleGenerateImage(args) {
     // STEP 12: Wait for images to appear in the DOM
     logger.info('Waiting for generated images...');
     let generatedImageUuids = [];
-    const genTimeoutMs = get('generationTimeoutMs', 120000);
+    const genTimeoutMs = get('generationTimeoutMs', get('jobTimeoutMs', 120000));
     const genStart = Date.now();
+    let lastProgressLog = 0;
 
     while (Date.now() - genStart < genTimeoutMs) {
       await page.waitForTimeout(2000);
@@ -287,7 +309,8 @@ export async function handleGenerateImage(args) {
         break;
       }
 
-      if ((Date.now() - genStart) % 30000 === 0) {
+      if (Date.now() - lastProgressLog >= 30000) {
+        lastProgressLog = Date.now();
         logger.info('Still waiting for images...', { elapsed: Date.now() - genStart });
         await takeScreenshot(page, `gen-wait-${Math.round((Date.now() - genStart) / 1000)}s`);
       }
@@ -295,7 +318,7 @@ export async function handleGenerateImage(args) {
 
     if (generatedImageUuids.length === 0) {
       await takeScreenshot(page, 'no-images-detected');
-      throw new FlowError(ErrorCodes.DOWNLOAD_FAILED,
+      throw new FlowError(ErrorCodes.GENERATION_TIMEOUT,
         'Generation completed but no images were detected in the DOM. ' +
         'Check the Flow project content library.');
     }
@@ -312,8 +335,8 @@ export async function handleGenerateImage(args) {
       model,
       ratio,
       auto_confirm: true,
-      quantity: args.quantity || 1,
-      prompt: args.prompt,
+      quantity: qty,
+      prompt,
       ingredients_requested: mentionNames,
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
@@ -328,7 +351,7 @@ export async function handleGenerateImage(args) {
       account: get('expectedAccount'),
       model_used: model,
       ratio,
-      prompt: args.prompt,
+      prompt,
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
       image_count: generatedImageUuids.length,

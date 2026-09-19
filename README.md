@@ -139,13 +139,13 @@ This will automatically find their configuration files and add the `Google-Flow`
 
 **Claude Desktop**
 Currently, Claude Desktop requires manual configuration:
-Add the following to your `claude_desktop_config.json`:
+Add the following to your `claude_desktop_config.json` (run `npm run build` first — `dist/` is what ships):
 ```json
 {
   "mcpServers": {
     "Google-Flow": {
       "command": "node",
-      "args": ["/absolute/path/to/Google-Flow_MCP/src/index.js"]
+      "args": ["/absolute/path/to/Google-Flow_MCP/dist/index.js"]
     }
   }
 }
@@ -157,14 +157,16 @@ Currently, Cursor requires manual UI configuration:
 2. Click **+ Add New MCP Server**.
 3. Name: `Google-Flow`
 4. Type: `command`
-5. Command: `node /absolute/path/to/Google-Flow_MCP/src/index.js`
+5. Command: `node /absolute/path/to/Google-Flow_MCP/dist/index.js`
+   (run `npm run build` first; `src/index.js` works for dev only)
 
 ### 4. Verify everything end-to-end
-With Chrome running (step 1), run:
+With Chrome running (step 1), run unit tests plus a live smoke test:
 ```bash
-npm run test
+npm test            # vitest unit tests (validation, queue, sanitizers)
+npm run test:smoke  # flow_connect over stdio (needs Chrome running)
+npm run build       # bundles src/ -> dist/ (required before register)
 ```
-This sends a `flow_connect` tool call to the MCP server over stdio and prints the raw response.
 
 ---
 
@@ -222,15 +224,19 @@ All settings live in `config/flow.config.json` (copy from `flow.config.example.j
 | Field | Description | Default |
 |---|---|---|
 | `expectedAccount` | Google account email `flow_account_check` expects | *(required)* |
-| `chromeExecutable` | Full path to `chrome` executable | auto-detected |
-| `chromeUserDataDir` | Path to Chrome's "User Data" folder | auto-detected |
+| `chromeExecutable` | Full path to `chrome` executable (optional, auto-detected) | auto-detected |
+| `chromeUserDataDir` | Path to Chrome's "User Data" folder | auto-detected per-OS |
 | `chromeProfile` | Profile folder name (e.g. `Default`, `Profile 1`) | `Default` |
 | `cdpPort` | Chrome DevTools Protocol port | `9222` |
 | `flowUrl` | Base Google Flow URL | `https://labs.google/fx/tools/flow` |
-| `headless` | Run Chrome headless | `true` |
-| `jobTimeoutMs` | Max time to wait for a generation job | `300000` |
+| `headless` | Run Chrome headless (not recommended — Flow needs visible browser) | `false` |
+| `jobTimeoutMs` | Watchdog: max time a job may stay `running` before auto-fail | `300000` |
+| `jobHistoryLimit` | Bounded queue history kept in `flow_queue_status` | `50` |
+| `agentResponseTimeoutMs` / `generationTimeoutMs` | Agent dialog window / generation wait | `5000` / `120000` |
 | `imageModels` / `videoModels` | Display name → internal model ID maps | see example config |
-| `ratios` / `videoRatios` / `durations` / `quantities` | Allowed generation parameters | see example config |
+| `ratios` / `videoRatios` / `durations` (`4s,6s,8s,10s`) / `quantities` | Allowed generation parameters | see example config |
+
+Env overrides win over the file: `FLOW_EXPECTED_ACCOUNT`, `FLOW_CHROME_PROFILE`, `FLOW_CDP_PORT`, `FLOW_HEADLESS`, `FLOW_JOB_TIMEOUT_MS`, `FLOW_CHROME_EXECUTABLE`, `FLOW_CHROME_USER_DATA_DIR`.
 
 ---
 
@@ -260,17 +266,19 @@ config/
   flow.config.example.json   # template — copy to flow.config.json
   selectors.map.json         # auto-updated cache from flow_discover_ui
 scripts/
-  run.js                     # OS-independent command dispatcher
+  run.js                     # OS-independent dispatcher (prefers pwsh on Windows)
   start-browser.ps1 / .sh    # launch Chrome with CDP debugging
   start-mcp.ps1 / .sh        # run the MCP server (manual check)
-  register-opencode.ps1 / .sh# register this server with OpenCode
-  test-flow-image.ps1 / .sh  # quick flow_connect smoke test
+  register.ps1 / .sh         # register this server (prefers dist/, falls back to src/)
+  test-flow-image.ps1 / .sh  # quick flow_connect smoke test (npm run test:smoke)
 src/
-  index.js                   # MCP server entry point
-  browser/                   # Chrome/CDP connection logic
-  navigation/                # project navigation, @ mention references
+  index.js                   # MCP server entry point (validated with zod, fail-closed errors)
+  browser/                   # Chrome/CDP connection logic (non-destructive reuse, liveness)
+  navigation/                # project navigation, @ mention references (no fallback mis-click)
   tools/                     # one file per MCP tool
-  utils/                     # config, logging, screenshots, file output
+  utils/                     # config, logger (stderr-only), screenshots, sanitize, validate
+tests/
+  sanitize/validate/job-queue/file-manager.test.js  # vitest unit tests (npm test)
 ```
 
 ---
@@ -278,7 +286,9 @@ src/
 ## Safety notes
 
 - This server only automates a browser you already control and are signed into — it does not store, transmit, or need your Google credentials.
-- Image and video generation **consume Google Flow credits**. Generation tools default to safe "prepare only" behavior (`auto_confirm: false`).
+- Image and video generation **consume Google Flow credits**. All mutating tools default to safe "prepare only" behavior (`auto_confirm: false`). `flow_create_character` previously defaulted to `true` — now fixed to `false`.
+- `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
+- `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
 - `config/flow.config.json` is gitignored — do not commit it.
 
 ---

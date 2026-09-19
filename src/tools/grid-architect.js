@@ -2,13 +2,17 @@ import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements } from '../browser/safe-actions.js';
+import { detectPageElements, ensureManualMode } from '../browser/safe-actions.js';
 import { saveMetadata } from '../utils/file-manager.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
+import { escapeRegExp, resolveSafePath } from '../utils/sanitize.js';
 import fs from 'fs';
 
 export async function handleUseGridArchitect(args) {
+  if (!args.theme_prompt || typeof args.theme_prompt !== 'string' || !args.theme_prompt.trim()) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'theme_prompt is required and must be a non-empty string');
+  }
   const job = jobQueue.createJob('grid_architect', {
     ...args,
     project_name: args.project_name,
@@ -23,6 +27,13 @@ export async function handleUseGridArchitect(args) {
       name: args.project_name,
       campaign: args.campaign,
     });
+
+    // Agent mode hijacks the prompt box — turn it OFF every run, verified.
+    try {
+      await ensureManualMode(page);
+    } catch (e) {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
+    }
 
     // Navigate to Tools sidebar section
     await navigateToSidebar(page, 'Tools');
@@ -43,37 +54,37 @@ export async function handleUseGridArchitect(args) {
     // Detect all UI elements
     const elements = await detectPageElements(page);
 
-    // Set engine if specified
+    // Set engine if specified (escaped exact match — no injection)
     if (args.engine) {
       try {
-        const engineLocator = page.locator(`button:has-text("${args.engine}")`).first();
+        const engineLocator = page.locator('button').filter({ hasText: new RegExp(`^${escapeRegExp(args.engine)}$`, 'i') }).first();
         if (await engineLocator.isVisible().catch(() => false)) {
           await engineLocator.click();
           await page.waitForTimeout(500);
         }
-      } catch { /* ok */ }
+      } catch (e) { logger.debug('Engine select failed', { error: e.message }); }
     }
 
     // Set ratio if specified
     if (args.ratio) {
       try {
-        const ratioLocator = page.locator(`button:has-text("${args.ratio}")`).first();
+        const ratioLocator = page.locator('button').filter({ hasText: new RegExp(`^${escapeRegExp(args.ratio)}$`, 'i') }).first();
         if (await ratioLocator.isVisible().catch(() => false)) {
           await ratioLocator.click();
           await page.waitForTimeout(500);
         }
-      } catch { /* ok */ }
+      } catch (e) { logger.debug('Ratio select failed', { error: e.message }); }
     }
 
     // Set visual logic
     if (args.visual_logic) {
       try {
-        const vlLocator = page.locator(`button:has-text("${args.visual_logic}")`).first();
+        const vlLocator = page.locator('button').filter({ hasText: new RegExp(`^${escapeRegExp(args.visual_logic)}$`, 'i') }).first();
         if (await vlLocator.isVisible().catch(() => false)) {
           await vlLocator.click();
           await page.waitForTimeout(500);
         }
-      } catch { /* ok */ }
+      } catch (e) { logger.debug('Visual-logic select failed', { error: e.message }); }
     }
 
     // Fill theme prompt
@@ -108,16 +119,19 @@ export async function handleUseGridArchitect(args) {
       }
     }
 
-    // Upload references
+    // Upload references (validate + don't swallow errors silently)
     if (args.references && Array.isArray(args.references)) {
       for (const ref of args.references) {
         try {
-          const fileLocator = page.locator('input[type="file"]').first();
-          if (fs.existsSync(ref)) {
-            await fileLocator.setInputFiles(ref).catch(() => {});
-            await page.waitForTimeout(2000);
+          const abs = resolveSafePath(ref);
+          if (!fs.existsSync(abs)) {
+            logger.warn('Grid reference not found, skipping', { ref: String(ref).slice(0, 120) });
+            continue;
           }
-        } catch { /* ok */ }
+          const fileLocator = page.locator('input[type="file"]').first();
+          await fileLocator.setInputFiles(abs);
+          await page.waitForTimeout(2000);
+        } catch (e) { logger.warn('Grid reference upload failed', { error: e.message }); }
       }
     }
 

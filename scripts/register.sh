@@ -7,7 +7,12 @@ IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SERVER_ENTRY="$PROJECT_DIR/src/index.js"
+# Prefer the built entry (what package.json ships); fall back to src for dev.
+if [[ -f "$PROJECT_DIR/dist/index.js" ]]; then
+  SERVER_ENTRY="$PROJECT_DIR/dist/index.js"
+else
+  SERVER_ENTRY="$PROJECT_DIR/src/index.js"
+fi
 
 log()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] INFO  $*" >&2; }
 warn() { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] WARN  $*" >&2; }

@@ -1,10 +1,14 @@
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements } from '../browser/safe-actions.js';
+import { detectPageElements, ensureManualMode } from '../browser/safe-actions.js';
 import { saveMetadata } from '../utils/file-manager.js';
+import { FlowError, ErrorCodes } from '../utils/errors.js';
+import { jobQueue } from '../queue/job-queue.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
+import { resolveSafePath } from '../utils/sanitize.js';
+import fs from 'fs';
 
 export async function handleOpenScenes() {
   const page = getPage();
@@ -24,33 +28,66 @@ export async function handleOpenScenes() {
 }
 
 export async function handleCreateScene(args) {
-  const page = getPage();
-
-  await ensureProjectInContext(page, {
-    name: args.project_name,
+  const description = (args.description || args.prompt || '').trim();
+  if (!description) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'prompt (or description) is required and must be a non-empty string');
+  }
+  const autoConfirm = args.auto_confirm === true;
+  const job = jobQueue.createJob('create_scene', {
+    prompt: description,
+    characters: args.characters,
+    project_name: args.project_name,
     campaign: args.campaign,
+    auto_confirm: autoConfirm,
   });
+  try {
+    jobQueue.startJob(job.id);
+    const page = getPage();
 
-  await navigateToSidebar(page, 'Scenes');
-  await page.waitForTimeout(2000);
-  await takeScreenshot(page, 'scenes-section');
+    await ensureProjectInContext(page, {
+      name: args.project_name,
+      campaign: args.campaign,
+    });
 
-  const elements = await detectPageElements(page);
-  const newSceneLocator = page.locator(
-    'button:has-text("New Scene"), button:has-text("Create"), button:has-text("New")'
-  ).first();
+    // Agent mode hijacks the prompt box — turn it OFF every run, verified.
+    try {
+      await ensureManualMode(page);
+    } catch (e) {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
+    }
 
-  if (await newSceneLocator.isVisible().catch(() => false)) {
-    await newSceneLocator.click();
-    await page.waitForTimeout(1500);
+    await navigateToSidebar(page, 'Scenes');
+    await page.waitForTimeout(2000);
+    await takeScreenshot(page, 'scenes-section');
 
-    if (args.description) {
+    const elements = await detectPageElements(page);
+    const newSceneLocator = page.locator(
+      'button:has-text("New Scene"), button:has-text("Create"), button:has-text("New")'
+    ).first();
+
+    if (await newSceneLocator.isVisible().catch(() => false)) {
+      // Scene creation mutates the project — require explicit opt-in.
+      if (!autoConfirm) {
+        const result = {
+          status: 'ready_for_confirmation',
+          message: 'Scene creation prepared. No scene was created (auto_confirm=false). Call again with auto_confirm=true to create.',
+          prompt: description,
+          elements,
+          screenshot: await takeScreenshot(page, 'scene-ready'),
+          jobId: job.id,
+        };
+        jobQueue.completeJob(job.id, result);
+        return result;
+      }
+      await newSceneLocator.click();
+      await page.waitForTimeout(1500);
+
       const inputLocator = page.locator('textarea, [contenteditable="true"]').first();
       if (await inputLocator.isVisible().catch(() => false)) {
         await inputLocator.click();
         await inputLocator.fill('');
         await page.waitForTimeout(200);
-        await inputLocator.type(args.description, { delay: 20 });
+        await inputLocator.type(description, { delay: 20 });
 
         // Insert "@" references for any characters to include in the scene.
         // Flow opens a popup when "@" is typed, listing project images and characters.
@@ -67,27 +104,43 @@ export async function handleCreateScene(args) {
     }
 
     if (args.reference_image) {
-      const fileInputLocator = page.locator('input[type="file"]').first();
-      if (await fileInputLocator.isVisible().catch(() => false)) {
-        await fileInputLocator.setInputFiles(args.reference_image);
-        await page.waitForTimeout(2000);
+      try {
+        const abs = resolveSafePath(args.reference_image);
+        if (fs.existsSync(abs)) {
+          // File inputs are usually hidden — don't gate on isVisible().
+          const fileInputLocator = page.locator('input[type="file"]').first();
+          await fileInputLocator.setInputFiles(abs).catch(() => {});
+          await page.waitForTimeout(2000);
+        } else {
+          logger.warn('Scene reference image not found, skipping', { path: args.reference_image });
+        }
+      } catch (e) {
+        logger.warn('Invalid scene reference image path', { error: e.message });
       }
     }
 
-    saveMetadata('scene-' + Date.now(), {
+    saveMetadata(job.id, {
       type: 'scene',
-      description: args.description,
+      description,
       referenceImage: args.reference_image,
       projectName: args.project_name,
       campaign: args.campaign,
     });
-  }
 
-  return {
-    status: 'ready_for_confirmation',
-    elements,
-    screenshot: await takeScreenshot(page, 'scene-ready'),
-  };
+    const out = {
+      status: autoConfirm ? 'success' : 'ready_for_confirmation',
+      elements,
+      prompt: description,
+      jobId: job.id,
+      screenshot: await takeScreenshot(page, 'scene-ready'),
+    };
+    jobQueue.completeJob(job.id, out);
+    return out;
+  } catch (err) {
+    try { await takeScreenshot(getPage(), 'create-scene-error'); } catch { /* ignore */ }
+    try { jobQueue.failJob(job.id, err); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 export async function handleListScenes() {

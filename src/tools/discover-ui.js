@@ -1,18 +1,21 @@
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { takeScreenshot } from '../utils/screenshots.js';
+import { takeScreenshot, sanitizeFileName } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';
 import fs from 'fs';
 import path from 'path';
-import { getFlowHome } from '../utils/config.js';
+import { getFlowHome, get } from '../utils/config.js';
+import { assertFlowUrl } from '../utils/sanitize.js';
 import { ensureProjectInContext, extractProjectId, buildProjectUrl, navigateToSidebar } from '../navigation/project-navigator.js';
 
-const SELECTORS_PATH = path.join(getFlowHome(), 'config', 'selectors.map.json');
+function selectorsPath() {
+  return path.join(getFlowHome(), 'config', 'selectors.map.json');
+}
 
 function loadSelectors() {
   try {
-    return JSON.parse(fs.readFileSync(SELECTORS_PATH, 'utf-8'));
+    return JSON.parse(fs.readFileSync(selectorsPath(), 'utf-8'));
   } catch {
     return {
       _description: 'UI selectors map for Google Flow',
@@ -30,15 +33,12 @@ function loadSelectors() {
 
 function saveSelectors(map) {
   map._lastUpdated = new Date().toISOString();
-  fs.writeFileSync(SELECTORS_PATH, JSON.stringify(map, null, 2));
+  fs.writeFileSync(selectorsPath(), JSON.stringify(map, null, 2));
   logger.info('Selectors map saved');
 }
 
-// "characters" is NOT a standalone page — Flow shows
-// "There doesn't seem to be anything here" for
-// https://labs.google/fx/tools/flow/characters (no project ID).
-// It only exists scoped to a project:
-// https://labs.google/fx/tools/flow/project/{projectId}/characters
+// "characters" is NOT a standalone page — it only exists scoped to a project:
+// {flowBase}/project/{projectId}/characters
 // Resolved at runtime in handleDiscoverUi via ensureProjectInContext.
 const PROJECT_SUBROUTE_PAGES = ['characters'];
 
@@ -51,12 +51,16 @@ const PROJECT_TAB_PAGES = {
   'all-media': 'All Media',
 };
 
+function flowBase() {
+  return get('flowUrl', 'https://flow.google.com/').replace(/\/+$/, '');
+}
+
 const PAGES = {
-  main: 'https://labs.google/fx/tools/flow',
-  toolsGallery: 'https://labs.google/fx/tools/flow/tools?tab=GALLERY',
-  gridArchitect: 'https://labs.google/fx/tools/flow/tools/grid-architect',
-  imageGeneration: 'https://labs.google/fx/tools/flow',
-  videoGeneration: 'https://labs.google/fx/tools/flow',
+  get main() { return flowBase() + '/'; },
+  get toolsGallery() { return flowBase() + '/tools?tab=GALLERY'; },
+  get gridArchitect() { return flowBase() + '/tools/grid-architect'; },
+  get imageGeneration() { return flowBase() + '/'; },
+  get videoGeneration() { return flowBase() + '/'; },
 };
 
 const PAGE_SELECTOR_KEYS = {
@@ -77,11 +81,13 @@ function getPageKey(pageName) {
 }
 
 export async function handleDiscoverUi(args) {
+  // Validate user-supplied URL BEFORE touching the browser so SSRF is rejected
+  // with UNSUPPORTED_URL even when disconnected (fail fast, correct code).
+  let url = args.url ? assertFlowUrl(args.url) : null;
   let page = getPage();
   const pageName = args.page || 'main';
   const pageKey = getPageKey(pageName);
 
-  let url = args.url;
   let tabToClick = null;
 
   if (!url) {
@@ -92,7 +98,7 @@ export async function handleDiscoverUi(args) {
       });
       const projectId = extractProjectId(project.url);
       url = projectId
-        ? `${buildProjectUrl('https://labs.google/fx/tools/flow', projectId)}/${pageKey}`
+        ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/${pageKey}`
         : project.url;
     } else if (PROJECT_TAB_PAGES[pageKey]) {
       const project = await ensureProjectInContext(page, {
@@ -110,7 +116,8 @@ export async function handleDiscoverUi(args) {
 
   try {
     // Navigate to the page
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
     // For sidebar-tab pages (Scenes/Images/All Media), click the tab —
@@ -124,7 +131,7 @@ export async function handleDiscoverUi(args) {
     const title = await page.title();
 
     // Take full page screenshot
-    const screenshotPath = await takeScreenshot(page, `discover-${pageName}`);
+    const screenshotPath = await takeScreenshot(page, `discover-${sanitizeFileName(pageName)}`);
 
     // Extract visible text content
     const visibleText = await page.evaluate(() => {
@@ -188,7 +195,7 @@ export async function handleDiscoverUi(args) {
       totalInputsFound: elements.inputs.length,
     };
   } catch (err) {
-    await takeScreenshot(page, `discover-error-${pageName}`);
+    await takeScreenshot(page, `discover-error-${sanitizeFileName(pageName)}`);
     throw new FlowError(
       ErrorCodes.UNKNOWN_UI_CHANGE,
       `UI discovery failed for ${pageName}: ${err.message}`
