@@ -470,7 +470,7 @@ async function handleToolCall(name, args) {
 }
 
 const server = new Server(
-  { name: 'google-flow-browser-mcp', version: '1.0.0' },
+  { name: 'google-flow-browser-mcp', version: '1.0.1' },
   { capabilities: { tools: {} } }
 );
 
