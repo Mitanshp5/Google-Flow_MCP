@@ -1,7 +1,7 @@
 {
   "name": "google-flow_mcp",
   "version": "1.0.1",
-  "description": "MCP server for Google Flow (labs.google/fx/tools/flow) via browser automation",
+  "description": "MCP server for Google Flow (flow.google.com) via browser automation",
   "keywords": [
     "Image",
     "generation",

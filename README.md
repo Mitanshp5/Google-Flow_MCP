@@ -1,7 +1,7 @@
 # Google Flow Browser MCP
 
 An MCP (Model Context Protocol) server that lets an AI agent drive
-[Google Flow](https://labs.google/fx/tools/flow) (`labs.google/fx/tools/flow`)
+[Google Flow](https://flow.google.com/) (`flow.google.com`)
 through your own logged-in Chrome profile — generating images, videos,
 characters, and scenes — without ever sharing your Google credentials with
 the agent.
@@ -30,7 +30,7 @@ sharing involved.
 
 ## Prerequisites
 
-- **Node.js 18 or later** (LTS recommended)
+- **Node.js >= 20.11** (see `engines` in `package.json`; LTS recommended)
 - **Google Chrome** installed normally (Playwright connects to your real
   Chrome via CDP — it does not need its own bundled browser for this)
 - A **Google account already signed in** to a Chrome profile (e.g. "Default" or "Profile 1" — any profile works, you just need to tell the config which one)
@@ -174,11 +174,12 @@ npm run build       # bundles src/ -> dist/ (required before register)
 
 1. `npm run start-browser` — once per session, leave the Chrome window open
 2. Your AI agent (with this MCP registered) calls:
-   - `flow_connect` — attach to the running Chrome
+   - `flow_connect` — attach to the running Chrome (also refreshes the live model catalog)
    - `flow_account_check` — confirm the right Google account is signed in
-   - `flow_generate_image` — create images in a Flow project
+   - `flow_list_models` — list live video/image models, ratios, durations (call once per session before generating)
+   - `flow_generate_image` — prepare (or with `auto_confirm:true`, generate) images in a Flow project
    - `flow_create_character` — create reusable characters
-   - `flow_generate_video` — create videos, optionally referencing
+   - `flow_generate_video` — prepare (or with `confirm_generate:true`, paid-generate) videos, optionally referencing
      previously generated images/characters via `ingredients` (`@name`
      references)
    - `flow_list_mention_options` — see what images/characters are available
@@ -200,8 +201,9 @@ everything ends up in one place instead of a new project per request.
 | `flow_status` | Report current connection/page status |
 | `flow_account_check` | Verify the signed-in Google account matches `expectedAccount` |
 | `flow_discover_ui` | Navigate to a Flow page and dump interactive elements (debugging) |
-| `flow_generate_image` | Generate image(s) from a prompt in the current project |
-| `flow_generate_video` | Generate video(s), optionally with `ingredients`/`use_character`/`use_scene` references |
+| `flow_generate_image` | Generate image(s) from a prompt in the current project (prepare-only by default; `auto_confirm:true` spends credits) |
+| `flow_generate_video` | Generate video(s), optionally with `ingredients`/`use_character`/`use_scene` references (prepare-only by default; `confirm_generate:true` spends credits) |
+| `flow_list_models` | List video/image models, ratios, durations from Flow UI (live) or cache |
 | `flow_download_latest` | Download the most recently generated asset |
 | `flow_create_character` | Create a new character (name + description + reference images) |
 | `flow_import_character` | Import a character from a saved JSON file |
@@ -228,15 +230,17 @@ All settings live in `config/flow.config.json` (copy from `flow.config.example.j
 | `chromeUserDataDir` | Path to Chrome's "User Data" folder | auto-detected per-OS |
 | `chromeProfile` | Profile folder name (e.g. `Default`, `Profile 1`) | `Default` |
 | `cdpPort` | Chrome DevTools Protocol port | `9222` |
-| `flowUrl` | Base Google Flow URL | `https://labs.google/fx/tools/flow` |
+| `flowUrl` | Base Google Flow URL | `https://flow.google.com/` |
 | `headless` | Run Chrome headless (not recommended — Flow needs visible browser) | `false` |
 | `jobTimeoutMs` | Watchdog: max time a job may stay `running` before auto-fail | `300000` |
 | `jobHistoryLimit` | Bounded queue history kept in `flow_queue_status` | `50` |
+| `actionDelayMs` | Delay between automated UI steps | `800` |
 | `agentResponseTimeoutMs` / `generationTimeoutMs` | Agent dialog window / generation wait | `5000` / `120000` |
-| `imageModels` / `videoModels` | Display name → internal model ID maps | see example config |
+| `downloadWaitMs` | Wait for download to complete | `30000` |
+| `imageModels` / `videoModels` | Display name → internal model ID maps (merged with live discovery) | see example config |
 | `ratios` / `videoRatios` / `durations` (`4s,6s,8s,10s`) / `quantities` | Allowed generation parameters | see example config |
 
-Env overrides win over the file: `FLOW_EXPECTED_ACCOUNT`, `FLOW_CHROME_PROFILE`, `FLOW_CDP_PORT`, `FLOW_HEADLESS`, `FLOW_JOB_TIMEOUT_MS`, `FLOW_CHROME_EXECUTABLE`, `FLOW_CHROME_USER_DATA_DIR`.
+Env overrides win over the file: `FLOW_URL`, `FLOW_EXPECTED_ACCOUNT`, `FLOW_CHROME_PROFILE`, `FLOW_CDP_PORT`, `FLOW_HEADLESS`, `FLOW_JOB_TIMEOUT_MS`, `FLOW_CHROME_EXECUTABLE`, `FLOW_CHROME_USER_DATA_DIR`, `FLOW_HOME`.
 
 ---
 
@@ -263,22 +267,25 @@ The server tracks one project per session by ID and reuses it. If this happens, 
 
 ```
 config/
-  flow.config.example.json   # template — copy to flow.config.json
-  selectors.map.json         # auto-updated cache from flow_discover_ui
+  flow.config.example.json   # template — copy to flow.config.json (gitignored)
+  flow.models.json           # live model catalog cache (gitignored, regenerated)
+  selectors.map.json         # self-healing selector cache from flow_discover_ui (gitignored)
 scripts/
   run.js                     # OS-independent dispatcher (prefers pwsh on Windows)
   start-browser.ps1 / .sh    # launch Chrome with CDP debugging
-  start-mcp.ps1 / .sh        # run the MCP server (manual check)
+  start-mcp.ps1 / .sh / .bat # run the MCP server (manual check)
   register.ps1 / .sh         # register this server (prefers dist/, falls back to src/)
   test-flow-image.ps1 / .sh  # quick flow_connect smoke test (npm run test:smoke)
 src/
   index.js                   # MCP server entry point (validated with zod, fail-closed errors)
-  browser/                   # Chrome/CDP connection logic (non-destructive reuse, liveness)
-  navigation/                # project navigation, @ mention references (no fallback mis-click)
+  browser/                   # Chrome/CDP connection (non-destructive reuse, liveness)
+  navigation/                # project registry, @ mention references, live model discovery
+  queue/                     # single-job queue with watchdog + bounded history
   tools/                     # one file per MCP tool
-  utils/                     # config, logger (stderr-only), screenshots, sanitize, validate
-tests/
-  sanitize/validate/job-queue/file-manager.test.js  # vitest unit tests (npm test)
+  utils/                     # config, logger (stderr-only), screenshots, sanitize, validate,
+                             # prompt QC, dynamic model universe, selector registry
+tests/                       # vitest unit tests: sanitize, validate, job-queue,
+                             # file-manager, video-quality, dynamic-catalog, prompt-bar
 ```
 
 ---
@@ -286,10 +293,10 @@ tests/
 ## Safety notes
 
 - This server only automates a browser you already control and are signed into — it does not store, transmit, or need your Google credentials.
-- Image and video generation **consume Google Flow credits**. All mutating tools default to safe "prepare only" behavior (`auto_confirm: false`). `flow_create_character` previously defaulted to `true` — now fixed to `false`.
+- Image and video generation **consume Google Flow credits**. All mutating tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
 - `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
 - `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
-- `config/flow.config.json` is gitignored — do not commit it.
+- `config/flow.config.json` is gitignored — do not commit it. Runtime caches (`flow.models.json`, `selectors.map.json`, `flow.projects.json`) are gitignored too.
 
 ---
 
