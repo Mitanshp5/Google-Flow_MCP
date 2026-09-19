@@ -52,6 +52,17 @@ const TOOL_DEFINITIONS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'flow_open',
+    description: 'Navigate the already-connected browser to a Google Flow URL without reconnecting. Only https://flow.google.com/... URLs are allowed (other hosts rejected).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Exact Flow URL to navigate to. Defaults to the configured flowUrl when omitted.' },
+        waitFor: { type: 'number', description: 'Extra ms to wait after load (clamped 0-15000).', default: 3000 },
+      },
+    },
+  },
+  {
     name: 'flow_status',
     description: 'Check current connection status: browser connected, Flow page loaded, account verified, job queue state.',
     inputSchema: {
@@ -345,6 +356,12 @@ async function handleToolCall(name, args) {
     case 'flow_disconnect': {
       await closeBrowserConnection();
       return { content: [{ type: 'text', text: JSON.stringify({ status: 'disconnected' }) }] };
+    }
+
+    case 'flow_open': {
+      const v = parseOrThrow(schemas.flow_open, args, 'flow_open');
+      const result = await handleFlowOpen(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
     case 'flow_status': {

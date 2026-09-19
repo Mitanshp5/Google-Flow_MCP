@@ -198,6 +198,7 @@ everything ends up in one place instead of a new project per request.
 |---|---|
 | `flow_connect` | Connect to / launch Chrome via CDP, optionally open Flow |
 | `flow_disconnect` | Close the browser connection |
+| `flow_open` | Navigate the connected browser to a Flow URL without reconnecting |
 | `flow_status` | Report current connection/page status |
 | `flow_account_check` | Verify the signed-in Google account matches `expectedAccount` |
 | `flow_discover_ui` | Navigate to a Flow page and dump interactive elements (debugging) |
