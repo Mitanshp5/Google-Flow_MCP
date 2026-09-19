@@ -7,7 +7,7 @@ import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
-import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
+import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles, findActionButton, GENERATE_BUTTON_SELECTORS } from '../browser/safe-actions.js';
 import { resolveModel, getUniverse } from '../utils/models.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import fs from 'fs';
@@ -129,11 +129,10 @@ export async function handleGenerateImage(args) {
 
     // Also verify the generate button exists (confirms the toolbar is active).
     // NOTE: Flow's submit uses a Material icon glyph, not literal text —
-    // match aria-labels first, text only as fallback.
-    const hasGenerateBtn = await page.locator(
-      'button[aria-label*="Start generation" i], button[aria-label*="Generate" i], button[aria-label*="Create" i], button[aria-label*="Send" i], button[type="submit"], button:has-text("Generate"), button:has-text("Create")'
-    ).first().isVisible().catch(() => false);
-    if (!hasGenerateBtn) {
+    // aria-first ordered lookup (P1-4); warn-only here, the live path below
+    // fails closed on a miss.
+    const foundBtn = await findActionButton(page, GENERATE_BUTTON_SELECTORS);
+    if (!foundBtn) {
       logger.warn('Generate button not visible on project page');
     }
 
@@ -268,20 +267,14 @@ export async function handleGenerateImage(args) {
     logger.info('⚠️ auto_confirm=true — running safety checks before clicking Generate');
     const preGenScreenshot = await takeScreenshot(page, 'pre-generate-verification');
 
-    // STEP 8: Find generate button
-    const generateBtnLocator = page.locator(
-      'button[aria-label*="Start generation" i], ' +
-      'button[aria-label*="Generate" i], ' +
-      'button[aria-label*="Create" i], ' +
-      'button[aria-label*="Send" i], ' +
-      'button[type="submit"], ' +
-      'button:has-text("Generate")'
-    ).first();
-    const generateBtnVisible = await generateBtnLocator.isVisible().catch(() => false);
-    if (!generateBtnVisible) {
+    // STEP 8: Find generate button (P1-4: same ordered lookup; fail closed).
+    const foundLiveBtn = await findActionButton(page, GENERATE_BUTTON_SELECTORS);
+    if (!foundLiveBtn) {
       await takeScreenshot(page, 'no-generate-btn');
       throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button not found');
     }
+    logger.info('Generate button located', { matched: foundLiveBtn.matched });
+    const generateBtnLocator = foundLiveBtn.locator;
 
     const isDisabled = await generateBtnLocator.isDisabled().catch(() => false);
     if (isDisabled) {

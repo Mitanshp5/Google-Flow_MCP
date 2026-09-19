@@ -674,6 +674,40 @@ export async function attachReferenceFiles(page, inputLocator, files, opts = {})
 }
 
 /**
+ * Ordered generate/submit-button lookup, aria-first (P1-4). Tries each
+ * selector in priority order and returns the first VISIBLE match as
+ * { locator, matched }, or null when nothing matches. Callers screenshot
+ * + fail closed on null (live path) or warn (prepare-only checks).
+ * Text selectors belong LAST: substring has-text() also matches
+ * "Regenerate"/"Generate video". Uses only
+ * page.locator(sel).first().isVisible() so it stays unit-mockable.
+ */
+export const GENERATE_BUTTON_SELECTORS = [
+  'button[aria-label*="Start generation" i]',
+  'button[aria-label*="Generate" i]',
+  'button[aria-label*="Create" i]',
+  'button[aria-label*="Send" i]',
+  'button[type="submit"]',
+  'button:has-text("Generate")',
+];
+
+export async function findActionButton(page, selectors, opts = {}) {
+  for (const sel of selectors || []) {
+    try {
+      const el = page.locator(sel).first();
+      const visible = opts.timeout
+        ? await el.isVisible({ timeout: opts.timeout }).catch(() => false)
+        : await el.isVisible().catch(() => false);
+      if (visible) {
+        logger.debug('Action button matched', { selector: sel });
+        return { locator: el, matched: sel };
+      }
+    } catch { /* next candidate */ }
+  }
+  return null;
+}
+
+/**
  * Safe click with pre- and post-delay
  */
 export async function safeClick(selector, options = {}) {
