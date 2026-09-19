@@ -120,7 +120,7 @@ export function parseBarRatio(text) {
 /**
  * Locate the visible prompt input (owner of the bottom bar).
  */
-async function barInput(page) {
+export async function barInput(page) {
   const cands = [
     page.locator('textarea[placeholder*="create" i]').first(),
     page.locator('textarea:visible').last(),
@@ -137,7 +137,7 @@ async function barInput(page) {
  * open first checks for an already-open panel and every close confirms it
  * actually closed (Escape can be swallowed mid-animation).
  */
-async function findSettingsPanel(page) {
+export async function findSettingsPanel(page) {
   let panel = page.locator('[role="dialog"]:visible, [role="menu"]:visible, [role="listbox"]:visible').last();
   if ((await panel.count().catch(() => 0)) === 0) {
     const overlay = page.locator('.cdk-overlay-pane:visible').last();
@@ -147,7 +147,7 @@ async function findSettingsPanel(page) {
   return (await panel.count().catch(() => 0)) > 0 ? panel : null;
 }
 
-async function closeSettingsPanel(page) {
+export async function closeSettingsPanel(page) {
   for (let i = 0; i < 4; i++) {
     if (!(await findSettingsPanel(page))) return true;
     await page.keyboard.press('Escape').catch(() => {});
