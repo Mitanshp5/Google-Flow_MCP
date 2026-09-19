@@ -1,5 +1,4 @@
 import { logger } from '../utils/logger.js';
-import { getPage } from '../browser/connect.js';
 import { get, getFlowHome } from '../utils/config.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { detectPageElements, pressSelectAll } from '../browser/safe-actions.js';

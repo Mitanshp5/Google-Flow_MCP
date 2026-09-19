@@ -2,7 +2,7 @@ import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { takeScreenshot, sanitizeFileName } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';
-import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
+import { navigateToSidebar } from '../navigation/project-navigator.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { get } from '../utils/config.js';
 import { escapeRegExp } from '../utils/sanitize.js';

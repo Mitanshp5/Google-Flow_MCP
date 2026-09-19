@@ -39,6 +39,7 @@
     "start-mcp": "node scripts/run.js start-mcp",
     "register": "node scripts/run.js register",
     "test": "vitest run",
+    "lint": "eslint .",
     "test:smoke": "node scripts/run.js test-flow-image",
     "typecheck": "node --check src/index.js"
   },
@@ -49,6 +50,8 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
     "vitest": "^3.2.4"
   },
   "engines": {

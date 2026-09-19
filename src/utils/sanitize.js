@@ -1,6 +1,6 @@
 import path from 'path';
 import { FlowError, ErrorCodes } from './errors.js';
-import { get, getFlowHome } from './config.js';
+import { getFlowHome } from './config.js';
 
 // Google Flow moved: labs.google/fx/tools/flow --308--> flow.google.com/
 // Both hosts are allowlisted; legacy labs path still accepted (it redirects).

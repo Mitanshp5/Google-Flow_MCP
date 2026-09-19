@@ -265,7 +265,7 @@ export async function handleGenerateImage(args) {
 
     // 🛡️ SAFETY: Pre-generation screenshot verification
     logger.info('⚠️ auto_confirm=true — running safety checks before clicking Generate');
-    const preGenScreenshot = await takeScreenshot(page, 'pre-generate-verification');
+    await takeScreenshot(page, 'pre-generate-verification');
 
     // STEP 8: Find generate button (P1-4: same ordered lookup; fail closed).
     const foundLiveBtn = await findActionButton(page, GENERATE_BUTTON_SELECTORS);

@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
-import { jobQueue } from '../queue/job-queue.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';

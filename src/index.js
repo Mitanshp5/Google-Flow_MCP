@@ -9,7 +9,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { logger, closeLogger } from './utils/logger.js';
 import { launchKiaraProfile, navigateToFlow } from './browser/launch-profile.js';
-import { getPage, getBrowser, setBrowser, closeBrowser as closeBrowserConnection, isBrowserConnected } from './browser/connect.js';
+import { getPage, setBrowser, closeBrowser as closeBrowserConnection } from './browser/connect.js';
 import { verifyAccount as checkAccount } from './browser/account-check.js';
 import { handleFlowOpen } from './tools/flow-open.js';
 import { handleFlowStatus } from './tools/flow-status.js';
@@ -31,8 +31,6 @@ import { FlowError } from './utils/errors.js';
 import { schemas, parseOrThrow } from './utils/validate.js';
 import { getUniverse, loadCatalog } from './utils/models.js';
 import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
-import fs from 'fs';
-import path from 'path';
 
 const TOOL_DEFINITIONS = [
   {

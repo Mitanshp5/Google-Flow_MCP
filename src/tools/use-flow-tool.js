@@ -1,4 +1,3 @@
-import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
 import { takeScreenshot, sanitizeFileName } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';

@@ -257,7 +257,6 @@ export async function configurePromptBar(page, { mode, ratio, quantity, quality,
     await takeScreenshot(page, 'bar-batch-no-panel');
     return [fail(opened.error || 'settings panel did not open')];
   }
-  const panel = opened.panel;
   const specs = [];
   if (mode) {
     const want = mode === 'Video' ? 'Video' : 'Image';

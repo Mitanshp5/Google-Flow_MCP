@@ -56,7 +56,6 @@ export async function verifyAccount(page) {
     try {
       const gaiaInfo = await activePage.evaluate(() => {
         // Try to get account info from various sources
-        const gaia = window.__GAIA__ || window.gapi || null;
         const flowData = document.getElementById('__NEXT_DATA__')?.textContent;
         if (flowData) {
           try {

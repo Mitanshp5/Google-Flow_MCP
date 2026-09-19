@@ -5,7 +5,6 @@ import { spawn } from 'child_process';
 import { logger } from '../utils/logger.js';
 import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { takeScreenshot } from '../utils/screenshots.js';
 import os from 'os';
 import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platform.js';
 import { isFlowUrl } from '../utils/sanitize.js';
@@ -314,7 +313,7 @@ export async function closeBrowser() {
   isConnected = false;
   selfLaunched = false;
   if (global.__chromeProcess) {
-    try { global.__chromeProcess.kill(); } catch (e) { }
+    try { global.__chromeProcess.kill(); } catch { }
     // Give Windows time to release file locks before rmSync.
     await new Promise(r => setTimeout(r, 500)).catch(() => {});
     global.__chromeProcess = null;

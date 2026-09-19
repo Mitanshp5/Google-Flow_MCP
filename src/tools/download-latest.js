@@ -27,7 +27,7 @@ export function resolveDownloadKind({ suggestedFilename = '', jobType = null } =
   return { kind: 'other', detectedFrom: 'fallback' };
 }
 
-export async function handleDownloadLatest(args = {}) {
+export async function handleDownloadLatest() {
   const page = getPage();
   logger.info('Attempting to download latest result');
 
