@@ -7,7 +7,7 @@ import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
-import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState } from '../browser/safe-actions.js';
+import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
 import { resolveModel, getUniverse } from '../utils/models.js';
 
 function selectModel(requested) {
@@ -182,6 +182,50 @@ export async function handleGenerateImage(args) {
         { expectedHead: prompt.slice(0, 40), actualHead: String(filledText).slice(0, 80) });
     }
 
+    // P0-1: upload local reference_images BEFORE @ mentions (previously a
+    // silent no-op: the schema advertised them but the handler never read them).
+    // Missing/unreadable paths throw here (fail fast) rather than being ignored.
+    const refPaths = [];
+    if (Array.isArray(args.reference_images) && args.reference_images.length > 0) {
+      for (const p of args.reference_images) {
+        let abs;
+        try {
+          abs = resolveSafePath(p);
+        } catch (e) {
+          throw new FlowError(ErrorCodes.INVALID_PARAMS, `reference_images[] invalid path: ${p} (${e.message})`);
+        }
+        let stat = null;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          stat = null;
+        }
+        if (!stat || !stat.isFile()) {
+          throw new FlowError(ErrorCodes.INVALID_PARAMS, `reference_images[] not found: ${p}`);
+        }
+        if (stat.size > 25 * 1024 * 1024) {
+          throw new FlowError(ErrorCodes.INVALID_PARAMS, `reference_images[] must be an image file ≤ 25MB: ${p}`);
+        }
+        refPaths.push(abs);
+      }
+    }
+    const refAttach = await attachReferenceFiles(page, promptInput, refPaths, { label: 'reference_images' });
+    const references = {
+      requested: refAttach.requested,
+      attached: refAttach.inputAccepted,
+      verified: refAttach.verified,
+      notes: refAttach.notes,
+    };
+    if (refPaths.length > 0 && !refAttach.verified) {
+      const msg = `Reference images requested but not all landed in the composer (input accepted ${refAttach.inputAccepted}/${refPaths.length}). No credits spent.`;
+      if (liveRun) {
+        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+          `${msg} Attach them manually in Flow, then retry with auto_confirm=true.`,
+          { references });
+      }
+      logger.warn(`Continuing prepare-only with unverified references. ${msg}`, { references });
+    }
+
     // Insert "@" references for any existing images/characters to use as ingredients.
     // Flow opens a popup when "@" is typed, listing project images and characters.
     const mentionNames = Array.isArray(args.ingredients) ? args.ingredients : [];
@@ -210,6 +254,7 @@ export async function handleGenerateImage(args) {
         prompt,
         ingredients_inserted: mentionResults.inserted,
         ingredients_failed: mentionResults.failed,
+        references,
         account: get('expectedAccount'),
         screenshot: setupScreenshot,
         jobId: job.id,
@@ -340,6 +385,7 @@ export async function handleGenerateImage(args) {
       ingredients_requested: mentionNames,
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
+      references,
       jobId: job.id,
       imageUuids: generatedImageUuids,
       projectUrl,
@@ -354,6 +400,7 @@ export async function handleGenerateImage(args) {
       prompt,
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
+      references,
       image_count: generatedImageUuids.length,
       image_uuids: generatedImageUuids,
       image_urls: imageUrls,

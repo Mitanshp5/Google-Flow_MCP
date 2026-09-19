@@ -1,3 +1,4 @@
+import path from 'path';
 import { get } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
@@ -598,6 +599,78 @@ export async function readToolState(page) {
     logger.debug('readToolState model scan failed', { error: e.message });
   }
   return state;
+}
+
+/**
+ * Pure decision step for attachment verification (P0-1/P0-2), unit-tested.
+ * verified means the file input demonstrably accepted every requested file
+ * (input.files.length read-back). Rendered-preview counts are reported for
+ * transparency but never gate anything: preview DOM varies by Flow UI
+ * version and must not brick a working run on a guessed selector.
+ */
+export function summarizeAttachment({ requested = [], inputAccepted = 0, previewsBefore = 0, previewsAfter = 0 } = {}) {
+  const names = [...requested];
+  if (names.length === 0) {
+    return { requested: [], inputAccepted: 0, attached: 0, verified: true, notes: ['no files requested'] };
+  }
+  const attached = Math.max(0, previewsAfter - previewsBefore);
+  const notes = [
+    `file input accepted ${inputAccepted}/${names.length}`,
+    `rendered previews: ${previewsBefore} → ${previewsAfter}`,
+  ];
+  return { requested: names, inputAccepted, attached, verified: inputAccepted === names.length, notes };
+}
+
+/**
+ * Upload local reference/frame files through Flow's file input, then read
+ * back that they actually landed (P0-1/P0-2). Returns summarizeAttachment()
+ * output. Never throws for UI absence — verified:false lets the caller
+ * warn (prepare-only) or refuse the paid click (live).
+ */
+export async function attachReferenceFiles(page, inputLocator, files, opts = {}) {
+  const names = (files || []).map((f) => path.basename(String(f)));
+  const label = opts.label || 'references';
+  if (!files || files.length === 0) return summarizeAttachment({ requested: [] });
+  let scope = null;
+  try {
+    scope = inputLocator ? await promptBarScope(page, inputLocator) : page.locator('body');
+  } catch {
+    scope = page.locator('body');
+  }
+  const countPreviews = async () => {
+    try {
+      return await scope.locator('img, [role="img"]').count();
+    } catch {
+      return 0;
+    }
+  };
+  const previewsBefore = await countPreviews();
+  try {
+    await page.locator('input[type="file"]').first().setInputFiles(files);
+    await page.waitForTimeout(1500);
+  } catch (e) {
+    logger.warn('Reference attach failed (no file input)', { label, error: e.message });
+    const base = summarizeAttachment({ requested: names, inputAccepted: 0, previewsBefore, previewsAfter: previewsBefore });
+    return { ...base, notes: [...base.notes, `${label}: no file input available (${e.message}); attach manually`] };
+  }
+  // Re-query before read-back: the framework may re-render the input.
+  let inputAccepted = 0;
+  try {
+    inputAccepted = await page.locator('input[type="file"]').first()
+      .evaluate((el) => (el && el.files ? el.files.length : 0));
+  } catch (e) {
+    logger.warn('Reference attach read-back failed', { label, error: e.message });
+  }
+  const previewsAfter = await countPreviews();
+  const out = summarizeAttachment({ requested: names, inputAccepted, previewsBefore, previewsAfter });
+  logger.info('Reference attach result', {
+    label,
+    requested: out.requested,
+    inputAccepted: out.inputAccepted,
+    attached: out.attached,
+    verified: out.verified,
+  });
+  return out;
 }
 
 /**
