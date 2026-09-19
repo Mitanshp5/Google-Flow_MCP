@@ -92,13 +92,53 @@ export function getUniverse() {
   };
 }
 
+// Max age for live-discovered capabilities before they stop overriding the
+// static table (judgment value: Flow ships UI changes on week-ish cadences;
+// an explicit refresh rewrites the timestamp). Stale entries fall back to
+// KNOWN_CAPS → DEFAULT_CAPS rather than asserting possibly-rotted values.
+export const LIVE_CAPS_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+
+// Keys discoverCapabilities() is allowed to write. Deliberately excludes
+// ingredientsRequireDuration: duration requirements are not observable from
+// option-row presence, so discovery must never assert them (rule: the
+// conservative P1-2 default keeps forcing until verified otherwise).
+const LIVE_CAPS_KEYS = ['ingredients', 'frames', 'extend'];
+
 export function capsFor(modelName) {
-  const known = KNOWN_CAPS[String(modelName || '').toLowerCase()];
+  const key = String(modelName || '').toLowerCase();
+  const live = liveCapsFor(key);
   // Defaults merge under known entries so new conservative keys (e.g.
   // ingredientsRequireDuration) apply to known models too until P1-3
   // discovery overrides them per-model from the live UI.
-  if (known) return { ...DEFAULT_CAPS, ...known, known: true };
-  return { ...DEFAULT_CAPS, known: false };
+  if (live) return { ...DEFAULT_CAPS, ...KNOWN_CAPS[key], ...live, known: true, source: 'live-cache' };
+  const known = KNOWN_CAPS[key];
+  if (known) return { ...DEFAULT_CAPS, ...known, known: true, source: 'static' };
+  return { ...DEFAULT_CAPS, known: false, source: 'default' };
+}
+
+/**
+ * Pure scrubber (unit-tested): keep only explicitly-observed booleans for
+ * known keys. Anything malformed → null (fall back to static), never guess.
+ */
+export function scrubLiveCaps(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const out = {};
+  for (const k of LIVE_CAPS_KEYS) {
+    if (typeof entry[k] === 'boolean') out[k] = entry[k];
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function liveCapsFor(lowerName) {
+  try {
+    const cache = loadCatalog();
+    const age = Date.now() - new Date(cache?.capabilitiesObservedAt).getTime();
+    if (!Number.isFinite(age) || age > LIVE_CAPS_MAX_AGE_MS) return null;
+    const entry = cache?.capabilities?.[lowerName];
+    return scrubLiveCaps(entry);
+  } catch {
+    return null;
+  }
 }
 
 /**

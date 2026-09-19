@@ -30,7 +30,7 @@ import { takeScreenshot } from './utils/screenshots.js';
 import { FlowError } from './utils/errors.js';
 import { schemas, parseOrThrow } from './utils/validate.js';
 import { getUniverse, loadCatalog } from './utils/models.js';
-import { discoverModels } from './navigation/model-discovery.js';
+import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -400,7 +400,15 @@ async function handleToolCall(name, args) {
         try {
           const live = await discoverModels(getPage());
           if (live) {
-            return { content: [{ type: 'text', text: JSON.stringify({ ...live, source: 'live' }, null, 2) }] };
+            // P1-3: best-effort per-model capability probe; name lists return
+            // regardless (selection clicks only — never Generate, no spend).
+            let capabilities = null;
+            try {
+              capabilities = await discoverCapabilities(getPage(), { models: live.videoModels });
+            } catch (e) {
+              logger.warn('Capability discovery failed, keeping name lists only', { error: e.message });
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ ...live, capabilities, source: 'live' }, null, 2) }] };
           }
         } catch (e) {
           logger.warn('Manual model refresh failed, falling back to cache', { error: e.message });

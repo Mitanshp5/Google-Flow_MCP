@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { resolveModel, capsFor, getUniverse, FALLBACK_CATALOG, DEFAULT_CAPS, resolveIngredientsDuration } from '../src/utils/models.js';
+import { resolveModel, capsFor, getUniverse, FALLBACK_CATALOG, DEFAULT_CAPS, resolveIngredientsDuration, scrubLiveCaps } from '../src/utils/models.js';
+import { getFlowHome } from '../src/utils/config.js';
 import { getSelectors, noteSelectors, selectorKeys } from '../src/utils/selectors.js';
 import fs from 'fs';
+import path from 'path';
 
 describe('dynamic model universe (nothing frozen)', () => {
   it('resolves aliases + exact names, case-insensitive', () => {
@@ -90,5 +92,77 @@ describe('P1-2 ingredients duration gate (data-driven, conservative)', () => {
   it('already-8s is not a force', () => {
     expect(resolveIngredientsDuration(capsFor('Veo 3.1 - Fast'), '8s', true))
       .toEqual({ duration: '8s', forced: false });
+  });
+});
+
+describe('P1-3 live-cache preference (fixture-scoped, disk restored)', () => {
+  const catalogFile = path.join(getFlowHome(), 'config', 'flow.models.json');
+
+  // The real cache file may exist (live runs regenerate it) — never leak
+  // fixture content into it.
+  function withCatalogFixture(catalog, fn) {
+    const had = fs.existsSync(catalogFile) ? fs.readFileSync(catalogFile, 'utf-8') : null;
+    try {
+      fs.mkdirSync(path.dirname(catalogFile), { recursive: true });
+      fs.writeFileSync(catalogFile, JSON.stringify(catalog));
+      fn();
+    } finally {
+      if (had === null) {
+        try { fs.rmSync(catalogFile); } catch { /* already gone */ }
+      } else {
+        fs.writeFileSync(catalogFile, had);
+      }
+    }
+  }
+
+  it('scrubLiveCaps keeps only observed booleans for known keys', () => {
+    expect(scrubLiveCaps({ ingredients: true, frames: false, extend: true }))
+      .toEqual({ ingredients: true, frames: false, extend: true });
+    expect(scrubLiveCaps({ ingredients: true })).toEqual({ ingredients: true });
+    expect(scrubLiveCaps({ ingredients: 'yes' })).toBe(null);
+    expect(scrubLiveCaps({})).toBe(null);
+    expect(scrubLiveCaps(null)).toBe(null);
+    expect(scrubLiveCaps(['ingredients'])).toBe(null);
+    // Duration requirements are never writable via discovery (rule 4).
+    expect(scrubLiveCaps({ ingredients: true, ingredientsRequireDuration: '8s' }))
+      .toEqual({ ingredients: true });
+  });
+
+  it('fresh live entry beats the static table', () => {
+    withCatalogFixture({
+      videoModels: ['Veo 3.1 - Quality'],
+      capabilities: { 'veo 3.1 - quality': { ingredients: true, frames: true, extend: true } },
+      capabilitiesObservedAt: new Date().toISOString(),
+    }, () => {
+      const c = capsFor('Veo 3.1 - Quality');
+      expect(c.ingredients).toBe(true); // static table says false
+      expect(c.source).toBe('live-cache');
+      expect(c.known).toBe(true);
+      // Duration still conservative: discovery cannot write it.
+      expect(c.ingredientsRequireDuration).toBe('8s');
+    });
+  });
+
+  it('stale live entries fall back to static', () => {
+    withCatalogFixture({
+      videoModels: ['Veo 3.1 - Quality'],
+      capabilities: { 'veo 3.1 - quality': { ingredients: true } },
+      capabilitiesObservedAt: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(),
+    }, () => {
+      const c = capsFor('Veo 3.1 - Quality');
+      expect(c.ingredients).toBe(false);
+      expect(c.source).toBe('static');
+    });
+  });
+
+  it('malformed live entries fall back to static, unknown to default', () => {
+    withCatalogFixture({
+      videoModels: ['Veo 3.1 - Quality'],
+      capabilities: { 'veo 3.1 - quality': { ingredients: 'maybe' } },
+      capabilitiesObservedAt: new Date().toISOString(),
+    }, () => {
+      expect(capsFor('Veo 3.1 - Quality').source).toBe('static');
+      expect(capsFor('Future Model X').source).toBe('default');
+    });
   });
 });

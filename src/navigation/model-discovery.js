@@ -1,6 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { saveCatalog } from '../utils/models.js';
+import { saveCatalog, loadCatalog, getUniverse } from '../utils/models.js';
+import { setPromptBarModel } from '../browser/safe-actions.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 
 const IMAGE_HINTS = ['nano', 'banana', 'imagen'];
@@ -118,6 +119,191 @@ export async function discoverModels(page, opts = {}) {
     return catalog;
   } catch (e) {
     logger.warn('Model discovery failed (using cache/fallback)', { error: e.message });
+    return null;
+  }
+}
+
+// Capability markers: option-row text patterns that indicate a model
+// supports a capability when present AND enabled in the settings panel with
+// that model selected. Vocabulary comes from this repo's own UI strings
+// ("Ingredients to Video" warnings, "Video Frames/Ingredients" slot notes);
+// whether these markers truly discriminate per-model support is calibrated
+// live (see P1-3 calibration run) — never asserted from outside sources.
+// Deliberately no duration markers: duration requirements are not observable
+// from row presence, so discovery never writes ingredientsRequireDuration.
+const CAPABILITY_MARKERS = [
+  { key: 'ingredients', patterns: [/ingredient/i] },
+  { key: 'frames', patterns: [/video frame/i, /start frame/i, /end frame/i, /first frame/i, /last frame/i] },
+  { key: 'extend', patterns: [/\bextend\b/i] },
+];
+
+async function openSettingsPanel(page, deadline) {
+  const { getSelectors } = await import('../utils/selectors.js');
+  const triggers = getSelectors('settingsTrigger').map((sel) => page.locator(sel).first());
+  for (const t of triggers) {
+    if (Date.now() > deadline) break;
+    try {
+      if (await t.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await t.click({ timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+        return true;
+      }
+    } catch { /* next trigger */ }
+  }
+  return false;
+}
+
+async function closeSettingsPanel(page) {
+  for (let i = 0; i < 2; i++) {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(400);
+    const blocked = await page.locator('.cdk-overlay-backdrop-showing').first().isVisible().catch(() => false);
+    if (!blocked) break;
+  }
+}
+
+async function panelHandle(page) {
+  return page.locator('[role="dialog"], [role="menu"], [role="listbox"]').first()
+    .elementHandle().catch(() => null);
+}
+
+// Read-only snapshot of the currently selected model row (for restore).
+async function readSelectedModelRow(page, deadline) {
+  if (!(await openSettingsPanel(page, deadline))) return '';
+  try {
+    const handle = await panelHandle(page);
+    if (!handle) return '';
+    const text = await page.evaluate((root) => {
+      const row = root.querySelector('button.mat-mdc-menu-trigger')
+        || Array.from(root.querySelectorAll('button')).find((b) =>
+          /nano|banana|imagen|veo|omni/i.test(b.textContent || ''));
+      return ((row?.textContent || '').replace(/arrow_drop_down|arrow_drop_up/g, '').trim().replace(/\s+/g, ' '));
+    }, handle).catch(() => '');
+    return text;
+  } finally {
+    await closeSettingsPanel(page);
+  }
+}
+
+async function scanPanelCapabilities(page) {
+  const handle = await panelHandle(page);
+  if (!handle) return null;
+  return page.evaluate((root, markers) => {
+    const els = Array.from(root.querySelectorAll('[role="option"], [role="menuitem"], [role="tab"], li, button'));
+    const shown = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const out = {};
+    for (const m of markers) {
+      const res = m.patterns.map((p) => new RegExp(p.src, p.flags));
+      const hits = [];
+      for (const el of els) {
+        if (!shown(el)) continue;
+        const t = ((el.innerText || el.textContent) || '').trim().replace(/\s+/g, ' ');
+        if (!t || !res.some((re) => re.test(t))) continue;
+        if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+        if (hits.length < 5) hits.push(t.slice(0, 60));
+      }
+      out[m.key] = { supported: hits.length > 0, samples: hits };
+    }
+    return out;
+  }, handle, CAPABILITY_MARKERS.map((m) => ({
+    key: m.key,
+    patterns: m.patterns.map((r) => ({ src: r.source, flags: r.flags })),
+  }))).catch(() => null);
+}
+
+/**
+ * Discover per-model capabilities from the live settings panel (P1-3).
+ * For each model: select it, reopen the panel, record which capability rows
+ * are present+enabled, then move on. Merges {ingredients,frames,extend}
+ * per model into flow.models.json with capabilitiesObservedAt; capsFor()
+ * prefers fresh entries over the static table. Never writes duration
+ * requirements. Best-effort: never throws (returns null when the panel
+ * never opens), restores the entry selection when it could be read.
+ * No credits involved (selection clicks only, never Generate).
+ */
+export async function discoverCapabilities(page, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 120000;
+  const deadline = Date.now() + timeoutMs;
+  try {
+    await ensureProjectInContext(page, {
+      name: opts.project_name,
+      campaign: opts.campaign,
+    });
+    const models = Array.isArray(opts.models) && opts.models.length > 0
+      ? opts.models
+      : getUniverse().videoModels;
+
+    const entryModel = await readSelectedModelRow(page, deadline);
+    const probed = [];
+    const skipped = [];
+    for (const model of models) {
+      if (Date.now() > deadline) {
+        skipped.push({ model, reason: 'timeout-budget' });
+        continue;
+      }
+      let sel = null;
+      try {
+        sel = await setPromptBarModel(page, model);
+      } catch (e) {
+        skipped.push({ model, reason: `select-threw: ${e.message}` });
+        continue;
+      }
+      if (!sel?.ok) {
+        skipped.push({ model, reason: sel?.detail || 'select-unverified' });
+        continue;
+      }
+      if (!(await openSettingsPanel(page, deadline))) {
+        skipped.push({ model, reason: 'panel-did-not-open' });
+        continue;
+      }
+      try {
+        const scan = await scanPanelCapabilities(page);
+        if (!scan) {
+          skipped.push({ model, reason: 'panel-scan-failed' });
+          continue;
+        }
+        const caps = {};
+        for (const m of CAPABILITY_MARKERS) caps[m.key] = !!scan[m.key]?.supported;
+        probed.push({
+          model,
+          caps,
+          samples: Object.fromEntries(CAPABILITY_MARKERS.map((m) => [m.key, scan[m.key]?.samples || []])),
+        });
+        logger.info('Capabilities observed live', { model, caps });
+      } finally {
+        await closeSettingsPanel(page);
+      }
+    }
+
+    let restored = false;
+    if (entryModel) {
+      try {
+        const back = await setPromptBarModel(page, entryModel);
+        restored = !!back?.ok;
+      } catch (e) {
+        logger.warn('Capability probe: restore-select failed', { entryModel, error: e.message });
+      }
+    }
+
+    if (probed.length > 0) {
+      const prev = loadCatalog() || {};
+      const capabilities = { ...(prev.capabilities || {}) };
+      for (const p of probed) capabilities[String(p.model).toLowerCase()] = p.caps;
+      saveCatalog({
+        ...prev,
+        videoModels: Array.isArray(prev.videoModels) && prev.videoModels.length > 0
+          ? prev.videoModels
+          : models,
+        capabilities,
+        capabilitiesObservedAt: new Date().toISOString(),
+      });
+    }
+    return { probed, skipped, restored, observedAt: new Date().toISOString() };
+  } catch (e) {
+    logger.warn('Capability discovery failed (keeping static caps)', { error: e.message });
     return null;
   }
 }
