@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { summarizeAttachment } from '../src/browser/safe-actions.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // P0-1/P0-2: pure attachment-accounting logic. The DOM half
 // (attachReferenceFiles: setInputFiles + input.files read-back + preview
@@ -54,5 +59,17 @@ describe('summarizeAttachment', () => {
     expect(
       summarizeAttachment({ requested: ['a.png'], inputAccepted: 0 }).verified
     ).toBe(false);
+  });
+});
+
+// P0-1 follow-up: the ref-upload block needs resolveSafePath + fs at call
+// time (a missing import only explodes on the live path, which unit tests
+// never execute — this guards the wiring statically).
+describe('P0-1 image handler imports', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/tools/generate-image.js'), 'utf-8');
+
+  it('imports resolveSafePath and fs for reference validation', () => {
+    expect(src).toMatch(/resolveSafePath.*from '\.\.\/utils\/sanitize\.js'/);
+    expect(src).toMatch(/import fs from 'fs'/);
   });
 });

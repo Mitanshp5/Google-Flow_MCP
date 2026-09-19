@@ -9,6 +9,8 @@ import { insertMentionReferences } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
 import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
 import { resolveModel, getUniverse } from '../utils/models.js';
+import { resolveSafePath } from '../utils/sanitize.js';
+import fs from 'fs';
 
 function selectModel(requested) {
   // Dynamic universe: user config ∪ live discovery ∪ fallback — no frozen list.
