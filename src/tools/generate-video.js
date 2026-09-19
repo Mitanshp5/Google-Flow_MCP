@@ -3,12 +3,13 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements, configureGenerationUI, ensureManualMode, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
+import { detectPageElements, configureGenerationUI, configurePromptBar, ensureManualMode, readToolState, attachReferenceFiles, promptBarScope, setPromptBarMode, setPromptBarModel } from '../browser/safe-actions.js';
 import { saveMetadata, getOutputDir } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 import { insertMentionReferences, listMentionOptions, collectMentionNames } from '../navigation/mentions.js';
 import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
+import { getSelectors } from '../utils/selectors.js';
 import { get } from '../utils/config.js';
 import { resolveModel, getUniverse, resolveIngredientsDuration } from '../utils/models.js';
 import fs from 'fs';
@@ -56,8 +57,6 @@ function resolveFrame(p, label) {
 async function selectModelViaTune(page, model) {
   const want = String(model).toLowerCase();
   // Fast path: chip already shows the model.
-  const { readToolState, promptBarScope, setPromptBarMode, setPromptBarModel } =
-    await import('../browser/safe-actions.js');
   const before = await readToolState(page).catch(() => null);
   if (before?.model && (before.model.toLowerCase() === want || before.model.toLowerCase().includes(want.split(' ')[0]))) {
     logger.info('Model already showing in UI chip', { model, chip: before.modelChip });
@@ -181,7 +180,6 @@ export async function handleGenerateVideo(args) {
 
     // Find prompt input from the dynamic selector registry — try current view
     // first, then navigate sidebar.
-    const { getSelectors } = await import('../utils/selectors.js');
     let promptInput = null;
     const promptCandidates = getSelectors('promptInput').map(sel => page.locator(sel).first());
 
@@ -244,9 +242,6 @@ export async function handleGenerateVideo(args) {
     // which option rows the panel shows), then the rest in one batch.
     // Strict in the live path (paid click), warn-only in prepare-only.
     // Before prompt fill (open pickers block the input).
-    const { setPromptBarMode, setPromptBarModel, configurePromptBar } =
-      await import('../browser/safe-actions.js');
-    const { getUniverse } = await import('../utils/models.js');
     const liveQualities = getUniverse().qualities || [];
     const wantQuality = args.quality || get('defaultQuality', '720p');
     const quality = liveQualities.find(q => String(q).toLowerCase() === String(wantQuality).toLowerCase());
