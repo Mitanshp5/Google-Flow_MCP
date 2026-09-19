@@ -167,11 +167,40 @@ async function panelHandle(page) {
     .elementHandle().catch(() => null);
 }
 
+/**
+ * Poll for the open SETTINGS panel and validate it really is one (P1-3
+ * calibration finding: the model-name fallback trigger opens the nested
+ * model *dropdown* — also a [role="menu"] — whose scan would record all-
+ * false capabilities and poison the cache. The settings panel always
+ * carries the model row (menu-trigger); the dropdown never does. Returns
+ * null unless a validated panel appears in time.
+ */
+async function awaitSettingsPanel(page, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const handle = await panelHandle(page);
+      if (handle) {
+        const valid = await page.evaluate((root) => {
+          try {
+            return !!root.querySelector('button.mat-mdc-menu-trigger, [class*="menu-trigger"]');
+          } catch {
+            return false;
+          }
+        }, handle).catch(() => false);
+        if (valid) return handle;
+      }
+    } catch { /* retry */ }
+    await page.waitForTimeout(500).catch(() => {});
+  }
+  return null;
+}
+
 // Read-only snapshot of the currently selected model row (for restore).
 async function readSelectedModelRow(page, deadline) {
   if (!(await openSettingsPanel(page, deadline))) return '';
   try {
-    const handle = await panelHandle(page);
+    const handle = await awaitSettingsPanel(page, 4000);
     if (!handle) return '';
     const text = await page.evaluate((root) => {
       const row = root.querySelector('button.mat-mdc-menu-trigger')
@@ -186,7 +215,7 @@ async function readSelectedModelRow(page, deadline) {
 }
 
 async function scanPanelCapabilities(page) {
-  const handle = await panelHandle(page);
+  const handle = await awaitSettingsPanel(page, 4000);
   if (!handle) return null;
   return page.evaluate((root, markers) => {
     const els = Array.from(root.querySelectorAll('[role="option"], [role="menuitem"], [role="tab"], li, button'));
