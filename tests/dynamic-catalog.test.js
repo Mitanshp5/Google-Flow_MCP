@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveModel, capsFor, getUniverse, FALLBACK_CATALOG } from '../src/utils/models.js';
+import { resolveModel, capsFor, getUniverse, FALLBACK_CATALOG, DEFAULT_CAPS, resolveIngredientsDuration } from '../src/utils/models.js';
 import { getSelectors, noteSelectors, selectorKeys } from '../src/utils/selectors.js';
 import fs from 'fs';
 
@@ -62,5 +62,33 @@ describe('selector registry (self-healing, not frozen)', () => {
     expect(map._test_key).toContain('.a');
     delete map._test_key;
     fs.writeFileSync('config/selectors.map.json', JSON.stringify(map, null, 2));
+  });
+});
+
+describe('P1-2 ingredients duration gate (data-driven, conservative)', () => {
+  it('defaults merge under known entries (no per-model duration claims)', () => {
+    expect(DEFAULT_CAPS.ingredientsRequireDuration).toBe('8s');
+    for (const m of ['Veo 3.1 - Fast', 'Veo 3.1 - Lite', 'Veo 3.1 - Quality', 'Omni Flash']) {
+      expect(capsFor(m).ingredientsRequireDuration).toBe('8s');
+    }
+    expect(capsFor('Future Model X').ingredientsRequireDuration).toBe('8s');
+  });
+
+  it('no ingredients passes duration through untouched', () => {
+    expect(resolveIngredientsDuration(capsFor('Veo 3.1 - Fast'), '4s', false))
+      .toEqual({ duration: '4s', forced: false });
+  });
+
+  it('forces 8s for every model today (identical to the old hardcoded check)', () => {
+    for (const m of ['Veo 3.1 - Fast', 'Veo 3.1 - Lite', 'Veo 3.1 - Quality', 'Omni Flash', 'Future Model X']) {
+      expect(resolveIngredientsDuration(capsFor(m), '4s', true))
+        .toEqual({ duration: '8s', forced: true });
+      expect(resolveIngredientsDuration(capsFor(m), '6s', true).forced).toBe(true);
+    }
+  });
+
+  it('already-8s is not a force', () => {
+    expect(resolveIngredientsDuration(capsFor('Veo 3.1 - Fast'), '8s', true))
+      .toEqual({ duration: '8s', forced: false });
   });
 });

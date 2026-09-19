@@ -16,7 +16,10 @@ export const FALLBACK_CATALOG = {
 
 // Conservative capability defaults for models we have never seen:
 // assume NO ingredients/extend (Quality-like restrictions) — fail closed.
-export const DEFAULT_CAPS = { ingredients: false, extend: false, frames: true };
+// ingredientsRequireDuration preserves the shipped force-8s-with-ingredients
+// behavior for every model until P1-3 live discovery authoritatively relaxes
+// a per-model value. No per-model duration claim is asserted anywhere here.
+export const DEFAULT_CAPS = { ingredients: false, extend: false, frames: true, ingredientsRequireDuration: '8s' };
 
 // Known capability overrides (verified against Flow support docs).
 export const KNOWN_CAPS = {
@@ -91,8 +94,26 @@ export function getUniverse() {
 
 export function capsFor(modelName) {
   const known = KNOWN_CAPS[String(modelName || '').toLowerCase()];
-  if (known) return { ...known, known: true };
+  // Defaults merge under known entries so new conservative keys (e.g.
+  // ingredientsRequireDuration) apply to known models too until P1-3
+  // discovery overrides them per-model from the live UI.
+  if (known) return { ...DEFAULT_CAPS, ...known, known: true };
   return { ...DEFAULT_CAPS, known: false };
+}
+
+/**
+ * Ingredients duration gate (P1-2): previously a hardcoded model-blind
+ * `!== '8s'` check in the video handler. Now data-driven off caps, but
+ * every model — known or not — still resolves to the conservative '8s'
+ * force, so behavior is identical today. P1-3 may relax per-model values
+ * from live discovery; until then nothing is asserted about any model.
+ * Returns { duration, forced }.
+ */
+export function resolveIngredientsDuration(caps, requestedDuration, hasIngredients) {
+  if (!hasIngredients) return { duration: requestedDuration, forced: false };
+  const need = caps?.ingredientsRequireDuration ?? DEFAULT_CAPS.ingredientsRequireDuration;
+  if (need === requestedDuration) return { duration: requestedDuration, forced: false };
+  return { duration: need, forced: true };
 }
 
 /**

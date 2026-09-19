@@ -10,7 +10,7 @@ import { insertMentionReferences, listMentionOptions, collectMentionNames } from
 import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { get } from '../utils/config.js';
-import { resolveModel, getUniverse } from '../utils/models.js';
+import { resolveModel, getUniverse, resolveIngredientsDuration } from '../utils/models.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -224,10 +224,14 @@ export async function handleGenerateVideo(args) {
         `Duration "${requestedDuration}" not available. Available: ${allowed.join(', ')}`,
         { requested: requestedDuration, available: allowed });
     }
-    let effectiveDuration = requestedDuration;
-    if (mentionNames.length > 0 && effectiveDuration !== '8s') {
-      logger.warn('Ingredients to Video requires 8s — overriding duration', { requested: effectiveDuration });
-      effectiveDuration = '8s';
+    // P1-2: ingredients duration gate lives in the capability system, not a
+    // hardcoded model-blind check. Every model still resolves to the
+    // conservative '8s' force today (identical behavior); P1-3 discovery may
+    // relax per-model values once verified against the live UI.
+    const durationDecision = resolveIngredientsDuration(caps, requestedDuration, mentionNames.length > 0);
+    const effectiveDuration = durationDecision.duration;
+    if (durationDecision.forced) {
+      logger.warn('Ingredients to Video requires 8s for this model — overriding duration', { requested: requestedDuration, model });
     }
 
     const qty = Math.min(Math.max(Number(args.quantity) || 1, 1), 4);
