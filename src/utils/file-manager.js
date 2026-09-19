@@ -25,7 +25,10 @@ function generateFilename(type, model, jobId, index) {
 }
 
 export function getOutputDir(type) {
-  const dir = path.join(outputBase(), type === 'image' ? 'images' : 'videos');
+  // P0-3: neutral 'other' bucket for downloads whose kind genuinely can't
+  // be determined (previously everything non-'image' landed in videos/).
+  const sub = type === 'image' ? 'images' : type === 'video' ? 'videos' : 'other';
+  const dir = path.join(outputBase(), sub);
   ensureDir(dir);
   return dir;
 }
