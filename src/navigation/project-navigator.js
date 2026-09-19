@@ -30,7 +30,7 @@ export function buildProjectUrl(baseUrl, projectId) {
   return `${base}/project/${projectId}`;
 }
 
-function loadProjects() {
+export function loadProjects() {
   try {
     const f = projectsFile();
     if (fs.existsSync(f)) {
@@ -42,7 +42,7 @@ function loadProjects() {
   return { projects: [] };
 }
 
-function saveProjects(data) {
+export function saveProjects(data) {
   const file = projectsFile();
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
