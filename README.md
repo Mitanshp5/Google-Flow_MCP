@@ -294,6 +294,7 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 ## Safety notes
 
 - This server only automates a browser you already control and are signed into — it does not store, transmit, or need your Google credentials.
+- Separate from credentials: the server deliberately minimizes automation fingerprints — it launches Chrome with `--disable-blink-features=AutomationControlled` (so `navigator.webdriver` reads false) and runs your signed-in profile from a temp copy. That is bot-detection evasion against Google's own sign-in/abuse checks (the "this browser may not be secure" block), distinct from the credential story above. By using this tool you accept that tradeoff relative to Google's Terms of Service.
 - Image and video generation **consume Google Flow credits**. All mutating tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
 - `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
 - `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
