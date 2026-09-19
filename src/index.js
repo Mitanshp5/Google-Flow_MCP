@@ -102,6 +102,8 @@ const TOOL_DEFINITIONS = [
         ratio: { type: 'string', description: 'Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4.', default: '1:1' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to local reference images to upload (optional).' },
         ingredients: { type: 'array', items: { type: 'string' }, description: 'Names of existing project images/characters to reference via "@name" (e.g., ["Bob the Astronaut", "Image 3"]). Use flow_list_mention_options to discover available names.' },
+        use_character: { type: 'string', description: 'Name of a single project character to reference via "@name" (added in addition to ingredients).' },
+        use_scene: { type: 'string', description: 'Name of a single project scene to reference via "@name" (added in addition to ingredients).' },
         project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
         campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
       },

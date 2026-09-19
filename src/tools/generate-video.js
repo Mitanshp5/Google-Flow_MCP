@@ -6,7 +6,7 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { detectPageElements, configureGenerationUI, ensureManualMode, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
 import { saveMetadata, getOutputDir } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
-import { insertMentionReferences, listMentionOptions } from '../navigation/mentions.js';
+import { insertMentionReferences, listMentionOptions, collectMentionNames } from '../navigation/mentions.js';
 import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { get } from '../utils/config.js';
@@ -91,12 +91,8 @@ export async function handleGenerateVideo(args) {
   for (const p of uploadRefs) {
     resolvedUploads.push(resolveFrame(p, 'reference_images[]'));
   }
-  const mentionNames = [
-    ...(Array.isArray(args.ingredients) ? args.ingredients : []),
-    ...(Array.isArray(args.references) ? args.references : []),
-    ...(args.use_character ? [args.use_character] : []),
-    ...(args.use_scene ? [args.use_scene] : []),
-  ];
+  // P0-6: shared @name collection (same order/semantics as the image tool).
+  const mentionNames = collectMentionNames(args);
   if (mentionNames.length > 3) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, `Flow supports max 3 ingredients per prompt; got ${mentionNames.length}. Trim to the 3 strongest (face + location + prop/style).`);
   }
@@ -110,7 +106,6 @@ export async function handleGenerateVideo(args) {
     duration: requestedDuration,
     quality: args.quality || get('defaultQuality', '720p'),
     quantity: args.quantity || 1,
-    outputFolder: args.output_folder,
     useCharacter: args.use_character,
     useScene: args.use_scene,
     references: args.references,
@@ -355,7 +350,7 @@ export async function handleGenerateVideo(args) {
       }));
     }
 
-    // Ensure output dir exists for eventual downloads (wires dead outputFolder).
+    // Ensure output dir exists for eventual downloads.
     let outputDir = null;
     try {
       outputDir = getOutputDir('video');

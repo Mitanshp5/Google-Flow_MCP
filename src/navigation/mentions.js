@@ -288,3 +288,23 @@ export async function insertMentionReferences(page, inputLocator, names = []) {
   }
   return { inserted, failed };
 }
+
+/**
+ * Collect every @name reference source into one ordered list (P0-6):
+ * ingredients + references arrays, then the single use_character/use_scene
+ * names. Shared by the image and video handlers so both resolve names the
+ * same way. Blank/non-string entries are dropped (they could never insert).
+ */
+export function collectMentionNames({ ingredients, references, use_character, use_scene } = {}) {
+  const names = [];
+  for (const list of [ingredients, references]) {
+    if (!Array.isArray(list)) continue;
+    for (const n of list) {
+      if (typeof n === 'string' && n.trim()) names.push(n);
+    }
+  }
+  for (const single of [use_character, use_scene]) {
+    if (typeof single === 'string' && single.trim()) names.push(single);
+  }
+  return names;
+}

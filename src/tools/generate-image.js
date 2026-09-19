@@ -5,7 +5,7 @@ import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { saveMetadata } from '../utils/file-manager.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
-import { insertMentionReferences } from '../navigation/mentions.js';
+import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
 import { get } from '../utils/config.js';
 import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
 import { resolveModel, getUniverse } from '../utils/models.js';
@@ -46,10 +46,8 @@ export async function handleGenerateImage(args) {
     ratio: args.ratio || '16:9',
     auto_confirm: autoConfirm,
     quantity: qty,
-    outputFolder: args.output_folder,
     useCharacter: args.use_character,
     useScene: args.use_scene,
-    useTool: args.use_tool,
     references: args.references,
     project_name: args.project_name,
     campaign: args.campaign,
@@ -230,7 +228,8 @@ export async function handleGenerateImage(args) {
 
     // Insert "@" references for any existing images/characters to use as ingredients.
     // Flow opens a popup when "@" is typed, listing project images and characters.
-    const mentionNames = Array.isArray(args.ingredients) ? args.ingredients : [];
+    // P0-6: use_character/use_scene/references resolve exactly like ingredients.
+    const mentionNames = collectMentionNames(args);
     let mentionResults = { inserted: [], failed: [] };
     if (mentionNames.length > 0) {
       mentionResults = await insertMentionReferences(page, promptInput, mentionNames);
