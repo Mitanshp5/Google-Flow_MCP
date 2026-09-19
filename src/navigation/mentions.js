@@ -41,7 +41,7 @@ const RESULT_ITEM_SELECTORS = [
 // type label so the returned name matches the actual asset title.
 const TYPE_LABEL_SUFFIXES = ['Image', 'Character', 'Video', 'Scene', 'Avatar', 'Audio', 'Upload'];
 
-function stripTypeLabelSuffix(text) {
+export function stripTypeLabelSuffix(text) {
   for (const suffix of TYPE_LABEL_SUFFIXES) {
     if (text.length > suffix.length && text.endsWith(suffix)) {
       return text.slice(0, -suffix.length).trim();
