@@ -139,7 +139,12 @@ const CAPABILITY_MARKERS = [
 
 async function openSettingsPanel(page, deadline) {
   const { getSelectors } = await import('../utils/selectors.js');
-  const triggers = getSelectors('settingsTrigger').map((sel) => page.locator(sel).first());
+  // Exact prompt-bar chip FIRST (same order as openBarSettings): the loose
+  // registry entries match unrelated buttons earlier in the DOM (notably the
+  // top-right "Tile grid settings" button), whose menu is not the settings
+  // panel (verified live: it opens a grid-view menu with no model row).
+  const exact = page.locator('button[aria-label*="Settings trigger" i]').first();
+  const triggers = [exact, ...getSelectors('settingsTrigger').map((sel) => page.locator(sel).first())];
   for (const t of triggers) {
     if (Date.now() > deadline) break;
     try {
