@@ -20,6 +20,19 @@ function selectVideoModel(requested) {
   return r ? r : null;
 }
 
+/**
+ * Pure live-poll ceiling (P1-1), unit-tested. The job watchdog
+ * (jobTimeoutMs) fires on its own timer while the handler polls, so the
+ * ceiling stays strictly under an active watchdog (30s margin): the handler
+ * always settles first and the terminal-state guards stay a backstop.
+ * No config defaults are changed here — this only reads them.
+ */
+export function resolveVideoPollCeilingMs({ generationTimeoutMs = 120000, jobTimeoutMs = 300000 } = {}) {
+  const floor = Math.max(Number(generationTimeoutMs) || 0, 360000);
+  if (!Number.isFinite(Number(jobTimeoutMs)) || Number(jobTimeoutMs) <= 0) return floor;
+  return Math.max(0, Math.min(floor, Number(jobTimeoutMs) - 30000));
+}
+
 function resolveFrame(p, label) {
   if (!p) return null;
   const abs = resolveSafePath(p);
@@ -403,11 +416,15 @@ export async function handleGenerateVideo(args) {
         throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button is disabled — no credits spent.');
       }
       await submitBtn.click();
-      logger.info('Generate clicked — polling for video output (up to 6 min)');
       const pollTimeoutMs = get('generationTimeoutMs', 120000);
+      const pollCeilingMs = resolveVideoPollCeilingMs({
+        generationTimeoutMs: pollTimeoutMs,
+        jobTimeoutMs: get('jobTimeoutMs', 300000),
+      });
+      logger.info('Generate clicked — polling for video output', { ceilingSec: Math.round(pollCeilingMs / 1000) });
       const pollStart = Date.now();
       let videoFound = null;
-      while (Date.now() - pollStart < Math.max(pollTimeoutMs, 360000)) {
+      while (Date.now() - pollStart < pollCeilingMs) {
         await page.waitForTimeout(5000);
         videoFound = await page.evaluate(() => {
           const vids = Array.from(document.querySelectorAll('video'));

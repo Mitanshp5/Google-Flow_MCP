@@ -107,6 +107,12 @@ class JobQueue {
   completeJob(id, result) {
     const job = this.jobs.get(id);
     if (!job) throw new Error(`Job not found: ${id}`);
+    // P1-1: never mutate a terminal job — the watchdog may have already
+    // failed it while a handler was still polling (independent timers).
+    if (job.status === 'completed' || job.status === 'failed') {
+      logger.warn('completeJob for terminal job ignored', { jobId: id, status: job.status });
+      return job;
+    }
     if (this.currentJob && this.currentJob.id !== id) {
       logger.warn('completeJob for non-current job ignored', { jobId: id, current: this.currentJob.id });
       return job;
@@ -128,6 +134,12 @@ class JobQueue {
     if (!job) {
       logger.error('Cannot fail unknown job', { jobId: id });
       return null;
+    }
+    // P1-1: symmetric with completeJob — a second terminal transition would
+    // otherwise push a duplicate history entry for the same job id.
+    if (job.status === 'completed' || job.status === 'failed') {
+      logger.warn('failJob for terminal job ignored', { jobId: id, status: job.status });
+      return job;
     }
     if (this.currentJob && this.currentJob.id !== id && job.status !== 'running' && job.status !== 'queued') {
       logger.warn('failJob for non-active job ignored', { jobId: id });
