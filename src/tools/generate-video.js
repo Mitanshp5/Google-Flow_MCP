@@ -3,7 +3,7 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements, configureGenerationUI, ensureManualMode, readToolState } from '../browser/safe-actions.js';
+import { detectPageElements, configureGenerationUI, ensureManualMode, readToolState, attachReferenceFiles } from '../browser/safe-actions.js';
 import { saveMetadata, getOutputDir } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
 import { insertMentionReferences, listMentionOptions } from '../navigation/mentions.js';
@@ -292,21 +292,38 @@ export async function handleGenerateVideo(args) {
     }
     logger.info('Prompt fill verified via read-back', { chars: filledText.length });
 
-    // Attach frames (first/last/anchor) + reference uploads via file input.
+    // P0-2: attach frames + reference uploads with read-back (previously
+    // fire-and-forget with only a manual-slot warning). attachVerified gates
+    // the live paid click below; prepare-only only warns.
     const frameNotes = [];
     const frameFiles = [...refPaths, ...resolvedUploads];
+    let attachAccepted = 0;
+    let attachVerified = true;
     if (frameFiles.length > 0) {
-      try {
-        const fileInput = page.locator('input[type="file"]').first();
-        await fileInput.setInputFiles(frameFiles);
-        await page.waitForTimeout(2000);
-        frameNotes.push(`${frameFiles.length} frame/reference file(s) attached; select Video Frames/Ingredients slots manually if Flow did not auto-assign.`);
-        logger.info('Frames/references attached', { count: frameFiles.length });
-      } catch (e) {
-        frameNotes.push(`Frame attach attempted but file input unavailable: ${e.message}. Attach start/end frames via Video Frames manually.`);
-        logger.warn('Frame attach failed', { error: e.message });
-      }
+      const attach = await attachReferenceFiles(page, promptInput, frameFiles, { label: 'frames' });
+      attachAccepted = attach.inputAccepted;
+      attachVerified = attach.verified;
+      frameNotes.push(...attach.notes);
+      frameNotes.push('Slot identity (start/end/ingredient) is not yet auto-verified: if Flow did not auto-assign, select Video Frames/Ingredients slots manually.');
+      logger.info('Frames/references attach result', { accepted: attachAccepted, verified: attachVerified });
     }
+
+    // P0-2: per-file verification record. slot_detected stays 'unknown'
+    // until slot markers are calibrated against the live DOM (follow-up);
+    // verified tracks landing (input accepted every file), not placement.
+    const frameVerification = {};
+    const pushFrameEntry = (key, abs) => {
+      if (!abs) return;
+      frameVerification[key] = {
+        requested: path.basename(abs),
+        slot_detected: 'unknown',
+        verified: attachVerified,
+      };
+    };
+    pushFrameEntry('start_frame', startFrame);
+    pushFrameEntry('end_frame', endFrame);
+    pushFrameEntry('anchor_frame', anchorFrame);
+    resolvedUploads.forEach((f, i) => pushFrameEntry(`reference_images[${i}]`, f));
 
     // Insert "@" references — fail closed: zero inserts with required names blocks.
     let mentionResults = { inserted: [], failed: [] };
@@ -371,6 +388,13 @@ export async function handleGenerateVideo(args) {
           { model, tuneSelect: modelVerified, toolState: postState });
       }
       logger.info('Model verified for live Generate', { model, chip: postState.modelChip });
+      // P0-2: fail closed — never spend credits when requested frames never landed.
+      if (frameFiles.length > 0 && !attachVerified) {
+        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+          `Refusing live Generate: ${frameFiles.length} requested frame/reference file(s) did not land in the composer ` +
+          `(input accepted ${attachAccepted}/${frameFiles.length}). Attach them manually via Video Frames/Ingredients, then retry. No credits spent.`,
+          { frame_verification: frameVerification });
+      }
       logger.info('⚠️⚠️⚠️ Clicking Generate — credits will be consumed', { model });
       const submitBtn = page.locator(
         'button[aria-label*="Start generation" i], button[aria-label*="Send" i], button[aria-label*="Generate" i], button[type="submit"]'
@@ -435,6 +459,7 @@ export async function handleGenerateVideo(args) {
       ui_verified: uiResult?.verified || [],
       ui_unverified: uiSkipped,
       frames: { start_frame: startFrame, end_frame: endFrame, anchor_frame: anchorFrame, uploads: resolvedUploads, notes: frameNotes },
+      frame_verification: frameVerification,
       ingredients_qc: 'plain/segmented bg preferred; no extra subjects in location/style refs; prompt names each ingredient',
       shots: shotPlan,
       output_dir: outputDir,
@@ -475,6 +500,7 @@ export async function handleGenerateVideo(args) {
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
       frames: { start_frame: startFrame, end_frame: endFrame, anchor_frame: anchorFrame },
+      frame_verification: frameVerification,
       shots: shotPlan,
       qc_warnings: warnings,
       frame_notes: frameNotes,
