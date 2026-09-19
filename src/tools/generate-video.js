@@ -485,7 +485,11 @@ export async function handleGenerateVideo(args) {
 
     return jobQueue.getJob(job.id).result;
   } catch (err) {
-    await takeScreenshot(getPage(), 'generate-video-error');
+    try {
+      await takeScreenshot(getPage(), 'generate-video-error');
+    } catch (screenshotErr) {
+      logger.warn('Could not take error screenshot (browser likely disconnected)', { error: screenshotErr.message });
+    }
     jobQueue.failJob(job.id, err);
     throw err;
   }

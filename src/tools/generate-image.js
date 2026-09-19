@@ -364,7 +364,11 @@ export async function handleGenerateImage(args) {
 
     return jobQueue.getJob(job.id).result;
   } catch (err) {
-    await takeScreenshot(getPage(), 'generate-image-error');
+    try {
+      await takeScreenshot(getPage(), 'generate-image-error');
+    } catch (screenshotErr) {
+      logger.warn('Could not take error screenshot (browser likely disconnected)', { error: screenshotErr.message });
+    }
     jobQueue.failJob(job.id, err);
     throw err;
   }
