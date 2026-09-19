@@ -138,24 +138,20 @@ const CAPABILITY_MARKERS = [
 ];
 
 async function openSettingsPanel(page, deadline) {
-  const { getSelectors } = await import('../utils/selectors.js');
-  // Exact prompt-bar chip FIRST (same order as openBarSettings): the loose
-  // registry entries match unrelated buttons earlier in the DOM (notably the
-  // top-right "Tile grid settings" button), whose menu is not the settings
-  // panel (verified live: it opens a grid-view menu with no model row).
-  const exact = page.locator('button[aria-label*="Settings trigger" i]').first();
-  const triggers = [exact, ...getSelectors('settingsTrigger').map((sel) => page.locator(sel).first())];
-  for (const t of triggers) {
-    if (Date.now() > deadline) break;
-    try {
-      if (await t.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await t.click({ timeout: 5000 }).catch(() => {});
-        await page.waitForTimeout(1000);
-        return true;
-      }
-    } catch { /* next trigger */ }
+  // Reuse the battle-tested opener (bar-scoped exact chip first, 5s poll,
+  // confirmed panel state) instead of a weaker duplicate: naive trigger
+  // clicks hit the top-right "Tile grid settings" button and silently open
+  // the wrong menu (verified live). The container validator on top stays as
+  // backstop against cache poisoning.
+  const { openBarSettings } = await import('../browser/safe-actions.js');
+  if (Date.now() > deadline) return false;
+  try {
+    const { panel, error } = await openBarSettings(page);
+    if (error || !panel) return false;
+    return true;
+  } catch {
+    return false;
   }
-  return false;
 }
 
 async function closeSettingsPanel(page) {

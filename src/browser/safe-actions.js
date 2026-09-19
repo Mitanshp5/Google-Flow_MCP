@@ -156,7 +156,7 @@ async function closeSettingsPanel(page) {
   return !(await findSettingsPanel(page));
 }
 
-async function openBarSettings(page) {
+export async function openBarSettings(page) {
   // Reuse an already-open panel (chip toggles — never blind-click).
   let panel = await findSettingsPanel(page);
   if (panel) return { panel };
