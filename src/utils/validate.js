@@ -157,4 +157,79 @@ export const schemas = {
     campaign: z.string().trim().max(200).optional(),
     project_url: z.string().trim().max(2000).optional(),
   }).passthrough(),
+
+  flow_story_create: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'storyId must be a valid identifier').optional(),
+    brief: z.record(z.string(), z.any()),
+    binding: z.record(z.string(), z.any()).optional(),
+    policy: z.record(z.string(), z.any()).optional(),
+    governance: z.record(z.string(), z.any()).optional(),
+    bible: z.record(z.string(), z.any()),
+    scenes: z.array(z.record(z.string(), z.any())).optional(),
+    shots: z.array(z.record(z.string(), z.any())).optional(),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_story_update: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'storyId must be a valid identifier'),
+    expectedRevision: z.number().int().min(1, 'expectedRevision must be a positive integer'),
+    patch: z.record(z.string(), z.any()).optional(),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_story_status: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'storyId must be a valid identifier'),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_story_review: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'storyId must be a valid identifier'),
+    expectedRevision: z.number().int().min(1, 'expectedRevision must be a positive integer'),
+    nodeId: z.string().trim().min(1, 'nodeId is required'),
+    nodeDigest: z.string().trim().min(1, 'nodeDigest is required'),
+    reviewer: z.string().trim().min(1, 'reviewer is required'),
+    decision: z.enum(['approve', 'reject', 'revise', 'reset']),
+    notes: z.string().optional(),
+  }).passthrough(),
+
+  flow_script_create: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptId must be a valid identifier').optional(),
+    brief: z.record(z.string(), z.any()),
+    binding: z.record(z.string(), z.any()).optional(),
+    policy: z.record(z.string(), z.any()).optional(),
+    governance: z.record(z.string(), z.any()).optional(),
+    bible: z.record(z.string(), z.any()),
+    scenes: z.array(z.record(z.string(), z.any())).optional(),
+    shots: z.array(z.record(z.string(), z.any())).optional(),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_script_update: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptId must be a valid identifier'),
+    expectedRevision: z.number().int().min(1, 'expectedRevision must be a positive integer'),
+    patch: z.record(z.string(), z.any()).optional(),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_script_status: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptId must be a valid identifier'),
+    accountKey: z.string().optional(),
+    projectId: z.string().optional(),
+  }).passthrough(),
+
+  flow_script_review: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptId must be a valid identifier'),
+    expectedRevision: z.number().int().min(1, 'expectedRevision must be a positive integer'),
+    nodeId: z.string().trim().min(1, 'nodeId is required'),
+    nodeDigest: z.string().trim().min(1, 'nodeDigest is required'),
+    reviewer: z.string().trim().min(1, 'reviewer is required'),
+    decision: z.enum(['approve', 'reject', 'revise', 'reset']),
+    notes: z.string().optional(),
+  }).passthrough(),
 };
+

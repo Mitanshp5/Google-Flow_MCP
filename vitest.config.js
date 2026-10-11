@@ -2,6 +2,7 @@ import { defineConfig, configDefaults } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    hookTimeout: 60000,
     include: ['tests/**/*.test.js', 'tests/**/*.spec.js'],
     exclude: [
       ...configDefaults.exclude,

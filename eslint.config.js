@@ -14,6 +14,8 @@ export default [
       'outputs/**',
       'screenshots-debug/**',
       'chrome-profile-kiara/**',
+      'qa-output/**',
+      'evidence/**',
     ],
   },
   {

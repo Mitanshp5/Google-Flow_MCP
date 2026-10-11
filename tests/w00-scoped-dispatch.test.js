@@ -13,7 +13,7 @@ import { FlowError } from '../src/utils/errors.js';
 describe('W00 scoped getPage boundary', () => {
   afterAll(async () => {
     await w00CloseBrowser();
-  });
+  }, 30000);
 
   it('outside a scope, disconnected getPage still throws (live fallback preserved)', () => {
     if (isBrowserConnected()) return; // a live session owns this machine; skip

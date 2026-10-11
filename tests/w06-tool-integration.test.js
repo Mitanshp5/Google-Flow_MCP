@@ -7,7 +7,7 @@ import { jobQueue } from '../src/queue/job-queue.js';
 let browser;
 const url = 'https://flow.google.com/project/tool-integration';
 beforeAll(async () => { browser = await w00LaunchBrowser(); });
-afterAll(async () => { jobQueue.reset(); await browser.close(); });
+afterAll(async () => { jobQueue.reset(); await browser.close(); }, 30000);
 async function fixture(html, fn) {
  getUiLease().reset(); jobQueue.reset();
  const page = await browser.newPage();

@@ -19,7 +19,7 @@ export const RUNTIME_SCHEMA_VERSION = 1;
 // Protected story state lives here. Disposable debug/metadata
 // (logs, screenshots-debug, outputs/metadata) must never be treated as
 // durable story state and retention sweeps must not touch these paths.
-export const PROTECTED_SUBDIRS = Object.freeze(['stories', 'journal']);
+export const PROTECTED_SUBDIRS = Object.freeze(['scripts', 'stories', 'journal']);
 export const RUNTIME_MARKER_FILE = 'runtime.json';
 
 let tmpCounter = 0;

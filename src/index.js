@@ -26,6 +26,10 @@ import { handleUseGridArchitect } from './tools/grid-architect.js';
 import { handleDiscoverUi } from './tools/discover-ui.js';
 import { handleListMentionOptions } from './tools/list-mentions.js';
 import { handleUseFlowTool } from './tools/use-flow-tool.js';
+import { handleScriptCreate } from './tools/script-create.js';
+import { handleScriptUpdate } from './tools/script-update.js';
+import { handleScriptStatus } from './tools/script-status.js';
+import { handleScriptReview } from './tools/script-review.js';
 import { jobQueue } from './queue/job-queue.js';
 import { takeScreenshot } from './utils/screenshots.js';
 import { FlowError } from './utils/errors.js';
@@ -293,6 +297,72 @@ const TOOL_DEFINITIONS = [
     description: 'Forcefully reset the job queue. Use this if a job is permanently stuck in "running" state and blocking other generations.',
     inputSchema: { type: 'object', properties: {} },
   },
+
+  {
+    name: 'flow_script_create',
+    description: 'Create a structured script, bible, continuity DAG, and bounded generation policy in immutable revision storage (local planning only, zero credit spend).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Optional explicit script UUID or identifier.' },
+        brief: { type: 'object', description: 'Script brief: title, aspectRatio, fps, targetDurationSec.' },
+        binding: { type: 'object', description: 'Account and project binding: accountKey, projectId.' },
+        policy: { type: 'object', description: 'Bounded policy limits: candidateLimit, timeBudgetSec, creditCap.' },
+        governance: { type: 'object', description: 'Governance: privacyMode, referenceRights, reviewAuthority.' },
+        bible: { type: 'object', description: 'Continuity bible: characters, locations, props with semantic IDs.' },
+        scenes: { type: 'array', description: 'Ordered scene list referencing bible locations.' },
+        shots: { type: 'array', description: 'Ordered shot cards with trim ranges, transition handles, and expected continuity states.' },
+        accountKey: { type: 'string', description: 'Optional top-level accountKey.' },
+        projectId: { type: 'string', description: 'Optional top-level projectId.' },
+      },
+      required: ['brief', 'bible'],
+    },
+  },
+  {
+    name: 'flow_script_update',
+    description: 'Update script brief, bible, or shots under CAS revision control, computing semantic invalidations across the continuity state DAG (local planning only, zero credit spend).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Target script UUID.' },
+        expectedRevision: { type: 'number', description: 'Expected current revision number.' },
+        patch: { type: 'object', description: 'Fields to update (brief, bible, scenes, shots, policy).' },
+        accountKey: { type: 'string', description: 'Optional accountKey verification.' },
+        projectId: { type: 'string', description: 'Optional projectId verification.' },
+      },
+      required: ['scriptId', 'expectedRevision'],
+    },
+  },
+  {
+    name: 'flow_script_status',
+    description: 'Query script continuity status, shot readiness, blocking prerequisites, and actionable planning steps (local planning only, zero credit spend).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Target script UUID.' },
+        accountKey: { type: 'string', description: 'Optional accountKey verification.' },
+        projectId: { type: 'string', description: 'Optional projectId verification.' },
+      },
+      required: ['scriptId'],
+    },
+  },
+  {
+    name: 'flow_script_review',
+    description: 'Submit human or director review decisions for script nodes bound to exact content digest and reviewer identity (local planning only, zero credit spend).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Target script UUID.' },
+        expectedRevision: { type: 'number', description: 'Expected current revision number.' },
+        nodeId: { type: 'string', description: 'Target node ID (char:*, loc:*, prop:*, scene:*, shot:*).' },
+        nodeDigest: { type: 'string', description: 'Digest of node content to verify against stale review.' },
+        reviewer: { type: 'string', description: 'Reviewer identifier.' },
+        decision: { type: 'string', enum: ['approve', 'reject', 'revise', 'reset'], description: 'Review decision.' },
+        notes: { type: 'string', description: 'Optional review notes.' },
+      },
+      required: ['scriptId', 'expectedRevision', 'nodeId', 'nodeDigest', 'reviewer', 'decision'],
+    },
+  },
 ];
 
 const pendingGeneration = new Set();
@@ -531,6 +601,58 @@ async function dispatchToolCall(name, args, epoch) {
     case 'flow_queue_reset': {
       jobQueue.reset();
       return { content: [{ type: 'text', text: JSON.stringify({ status: 'success', message: 'Job queue forcefully reset.' }) }] };
+    }
+
+    case 'flow_story_create':
+    case 'flow_script_create': {
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId || args?.storyId,
+        storyId: args?.storyId || args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name] || schemas.flow_story_create, normalizedArgs, name);
+      const normalized = { ...v, storyId: v.scriptId || v.storyId, scriptId: v.scriptId || v.storyId };
+      const result = await handleScriptCreate(normalized);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_story_update':
+    case 'flow_script_update': {
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId || args?.storyId,
+        storyId: args?.storyId || args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name] || schemas.flow_story_update, normalizedArgs, name);
+      const normalized = { ...v, storyId: v.scriptId || v.storyId, scriptId: v.scriptId || v.storyId };
+      const result = await handleScriptUpdate(normalized);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_story_status':
+    case 'flow_script_status': {
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId || args?.storyId,
+        storyId: args?.storyId || args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name] || schemas.flow_story_status, normalizedArgs, name);
+      const normalized = { ...v, storyId: v.scriptId || v.storyId, scriptId: v.scriptId || v.storyId };
+      const result = await handleScriptStatus(normalized);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_story_review':
+    case 'flow_script_review': {
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId || args?.storyId,
+        storyId: args?.storyId || args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name] || schemas.flow_story_review, normalizedArgs, name);
+      const normalized = { ...v, storyId: v.scriptId || v.storyId, scriptId: v.scriptId || v.storyId };
+      const result = await handleScriptReview(normalized);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
     default:

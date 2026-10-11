@@ -28,6 +28,7 @@
   "files": [
     "dist/",
     "scripts/",
+    "!scripts/*/**",
     "config/flow.config.example.json",
     "README.md",
     "LICENSE"
@@ -57,5 +58,8 @@
   },
   "engines": {
     "node": ">=20.11.0"
+  },
+  "directories": {
+    "test": "tests"
   }
 }

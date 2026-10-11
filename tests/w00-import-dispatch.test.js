@@ -35,7 +35,7 @@ afterAll(async () => {
   if (SAVED_FLOW_HOME === undefined) delete process.env.FLOW_HOME;
   else process.env.FLOW_HOME = SAVED_FLOW_HOME;
   fs.rmSync(W00_FLOW_HOME, { recursive: true, force: true });
-});
+}, 30000);
 
 function parsed(result) {
   return JSON.parse(result.content[0].text);
@@ -63,7 +63,9 @@ describe('w00 import lifecycle uses actual exports', () => {
       'flow_import_character', 'flow_list_mention_options', 'flow_list_models',
       'flow_open', 'flow_open_characters', 'flow_open_tools_gallery',
       'flow_queue_reset', 'flow_queue_status', 'flow_screenshot',
-      'flow_status', 'flow_use_grid_architect', 'flow_use_tool',
+      'flow_script_create', 'flow_script_review', 'flow_script_status',
+      'flow_script_update', 'flow_status', 'flow_use_grid_architect',
+      'flow_use_tool',
     ].sort());
     expect(typeof handleToolCall).toBe('function');
   });
@@ -264,6 +266,10 @@ const SCHEMA_FOR_TOOL = {
   flow_use_tool: 'flow_use_tool',
   flow_screenshot: 'flow_screenshot',
   flow_queue_status: 'flow_queue_status',
+  flow_script_create: 'flow_script_create',
+  flow_script_update: 'flow_script_update',
+  flow_script_status: 'flow_script_status',
+  flow_script_review: 'flow_script_review',
 };
 const NO_SCHEMA_TOOLS = [
   'flow_disconnect', 'flow_status', 'flow_account_check', 'flow_list_models',

@@ -1,0 +1,66 @@
+Work in C:\Code\Google-Flow_MCP. Implement the remaining W08 repairs and obtain independent acceptance. This is an implementation request, not another audit-only or planning cycle. Delegate implementation to OpenCode using exactly opencode/muse-spark-1.3-contributor-free. Stop before W09-W13.
+
+Current state
+- W00-W07 / Gate A no-spend reliability was accepted. Preserve it; do not reimplement accepted work.
+- W08 is now named script: src/script/{store,planner,schema,dag}.js and src/tools/script-*.js. Primary MCP tools are flow_script_create/update/status/review; retain flow_story_* compatibility and existing stories/ records.
+- Last checked branch: master; HEAD: 41add4ec4259de720af8c76a0b6d9404a0d852f9. Recheck actual Git state. There are substantial uncommitted changes and untracked W08 source/tests. Preserve all of them, plans and QA artifacts. Do not stage, commit, push, reset, stash or discard.
+- No implementation worker was launched by the prior failed response to 'try delegating that to opencode'. The recorded OpenCode work was read-only review, not repair implementation. Inspect process state rather than assuming a worker exists.
+- implementation-progress.md has historical/stale scope statements, including a W08-unstarted boundary. Reconcile with current source and newer evidence; update it at verified repair milestones.
+
+Read first
+1. google-flow-mcp-story-production-plan.md: authoritative W08 roadmap and acceptance criteria. The older implementation plan is historical only.
+2. qa-output/2026-10-10/checkpoints/w08-consolidated-parent-4qvxy8b_/verification-summary.json
+3. In that same checkpoint: review-resolution.json, wide-results.json, wide-probes.mjs, w08-adversarial-results.json, script-rename-regressions.json, canonical.json, snapshot.json.
+4. implementation-progress.md and current project instructions, relevant source, callers and tests before editing.
+
+Verified baseline, not a claim of W08 acceptance
+- 676 tests passed, 3 platform skips, zero canonical failures across 91 files.
+- W08: 49 passed across 6 files. Count by test-file basename, not absolute paths containing w08 in the scratch directory name.
+- Lint, syntax check (66 files), build, package dry-run (19 files including after runtime-data fixtures), alternate FLOW_HOME (17 tests) passed.
+- Actual installed-tarball initialized MCP create/status/review/update succeeded, scriptId returned, legacy status alias worked, missing digest failed closed; canSpend:false and liveVerified:false.
+- All original fourteen and subsequent fifteen counterexamples were repaired and independently replayed successfully. Do not redo those repairs or call them still broken.
+- Latest ten broader actual-dispatch probes expose FOUR remaining failure families. The recent additional review corroborates the coherence bypass but does not close the other three. Orphan nodeStates are not an acceptance blocker by themselves: preserve historical reviews and keep current-DAG membership enforcement.
+
+Remaining implementation scope
+A. Complete physical containment BEFORE every filesystem side effect
+- Story-directory junction guards work. Revision/container paths remain unsafe.
+- A pre-existing revisions/ junction lets create, update and review write snapshot files outside FLOW_HOME.
+- A junction at the selected revision directory lets status read an external snapshot.
+- A scripts/ container junction causes creation of an external child directory before INVALID_STORY_ID is thrown. Rejection after mkdir is not a safe no-side-effect outcome.
+- Validate the nearest existing ancestor for nonexistent paths and the actual canonical targets of containers, revision directories and manifest/snapshot files before mkdir/read/write/lock actions. Preserve the explicitly configured canonical FLOW_HOME root and scripts/stories compatibility. Extend same-boundary tests to file links/listing where supported; distinguish blocked fixture preparation from a correct application rejection.
+
+B. Enforce current manifest/snapshot coherence in ALL callers
+- getStory checks currentRevision/currentRevisionId coherence only when revisionId is absent.
+- updateStoryRecord and reviewStoryNode explicitly pass manifest.currentRevisionId, bypassing both checks.
+- A manifest claiming revision 99 but pointing to the valid revision-1 snapshot is rejected by status, yet update/review with expectedRevision:99 succeed and write revision 100.
+- A tampered snapshot.revisionId is likewise accepted by update.
+- Enforce current coherence when the selected revision equals the manifest's current pointer, whether supplied explicitly or implicitly. Independently bind every loaded snapshot to its requested revision ID/directory, including historical loads, without wrongly comparing a genuine historical revision to the current manifest revision.
+- Preserve existing integrity, foreign-ID rejection, digest checks, CAS locking, snapshot-first/manifest-last commit and historical reads.
+- Reject the prior review's false lead that all manifest-field validation is skipped with an explicit revisionId: getStory performs those manifest checks unconditionally. The actual bypass is snapshot coherence.
+
+C. Preserve strongest semantic invalidation across converging paths
+- Single-node identity-over-continuity precedence is repaired. Multi-node propagation still loses stronger identity signals at an already-invalidated node.
+- Actual public-dispatch repro: change hero visual identity while also changing shot a's after-state and shot b's matching before-state. Only a explicitly references hero; b depends on a via continuity; c depends on b via reference and is already approved. c incorrectly remains approved.
+- Track processed propagation modes/strength per node and revisit or upgrade on a stronger arrival. Prove order-independent results for converging identity, continuity and handoff paths. Preserve metadata-only behavior, unaffected branches and review history.
+
+D. Keep rational products and reduction exact, not just frame summation
+- BigInt frame summation/overflow rejection is repaired.
+- calculateTimelineDuration still computes totalUsableFrames * fps.den as Number before reduction; gcdBigInt also converts through Number.
+- Accepted public create with three total frames and FPS {num:24, den:9007199254740991} returns durationRational {num:6755399441055743, den:6}; exact reduced result is {num:9007199254740991, den:8}. Input components and the expected reduced output are safe integers.
+- Use BigInt through multiplication, GCD and reduction, then a checked JSON-safe boundary. Reject unrepresentable/invalid inputs or outputs honestly. Cover unsafe FPS components and intermediate overflow as the same family. Intentionally approximate millisecond display fields are not themselves a blocker.
+
+Execution discipline
+- Load opencode, test-driven-development, systematic-debugging and requesting-code-review skills. Verify exact model availability, pin --model opencode/muse-spark-1.3-contributor-free, and inspect exported assistant providerID/modelID before attributing work. Never silently substitute Codex or another model. Report a genuine provider blocker.
+- Copy the CURRENT uncommitted workspace into isolated lanes; a HEAD-only worktree would omit W08. Assign one storage/planner owner, one DAG owner, and one rational-schema owner, with non-overlapping regression test files. Parallelize those independent lanes and independent adversarial preparation. No worker edits the original repo; parent owns integration.
+- Use vertical RED -> minimal repair -> GREEN through actual handleToolCall or real storage callers. Preserve failing logs and add permanent regressions, not merely an external probe that exits zero after collecting observations.
+- Parent inspects actual diffs/artifacts, integrates only accepted owned files, and independently verifies integrated behavior. Use one frozen-snapshot independent OpenCode review on the same exact model after integration. Do not trust worker exit codes/summaries alone.
+- Run npm run test, npm run lint, npm run typecheck and npm run build; original 14 + repaired 15 + remaining 10 probes; W08 regressions; alternate FLOW_HOME; installed-package initialized script/legacy MCP tests; and pack exclusion with real fixture runtime directories.
+- Keep verification scripts inside ignored QA/evidence directories or separate copies, so they do not contaminate source lint or canonical collection. Read machine-readable counts; do not report probe completion as acceptance.
+- Preserve SHA-256 identities:
+  src/domain/submission-adapter.js: 8f143a7ec5966211c8912271646dcea3174a17990e2fa79f6f7d8a325f38e292
+  tests/w05-submission-adapter.test.js: bdd2d613ae149853ac0b5d74c762912a4f7d2319eefd148fa94f7395edd314ea
+  tests/w05-adapter-regressions.test.js: da9e503da1816325598553c560c08d81f28303499c2314a31ab879bfad9b0e84
+- Zero remote generation, zero Flow credit spend, no live browser interaction, purchases, public uploads or modification of another Hermes profile. These are local planning/storage repairs; no live authorization is needed.
+- Update implementation-progress.md and durable QA evidence at verified milestones: changed files, actual exits/counts, per-family closure, model provenance, unresolved blockers and next safe step. Do not overwrite prior evidence or broaden unexecuted static leads into proven blockers.
+
+Start by reconciling the current source with the saved ten-case matrix, then launch the bounded OpenCode implementation lanes. Keep working through integration and verification instead of returning another plan. At completion report scope-bound W08 acceptance or exact remaining failures, preserve all user work, and stop before W09-W13.

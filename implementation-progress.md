@@ -239,3 +239,46 @@ The detailed resume record includes file ownership, evidence locations, outstand
 ### 8.5 F01–F16 and R01–R04 Finding Closure Summary
 All 16 findings (F01–F16) and 4 risk controls (R01–R04) are fully closed with real code, schema validation, and landed test suites. Remote live generation and credit spend remain live-unverified and reserved for Gate B.
 
+---
+
+## 9. W08 Script Storage/Planner/DAG/Rational — Four-Family Repair Completion — 2026-10-11
+
+**Status: W08 four residual families CLOSED.** Scope-bound W08 acceptance for families A–D below. Prior 14 + 15 counterexamples preserved (no regressions). Orphan `nodeStates` retained by design with current-DAG review enforcement (non-blocking per brief). Stopped before W09–W13. No staging, commits, pushes, resets, remote generation, credit spend, or live browser interaction.
+
+Reconciles the stale “W08–W13 NOT started” boundary in §5/§8: W08 source/tests were already present uncommitted at HEAD `41add4ec4259de720af8c76a0b6d9404a0d852f9`; this pass repairs four remaining failure families in that uncommitted tree.
+
+### 9.1 Changed files (all user work preserved)
+- `src/script/store.js`: ancestor-aware `assertDirContained`/`assertFileContained` (lexical + nearest-existing-ancestor + native realpath, dangling-link aware); pre-side-effect validation in `getScriptsDir`/`getStoriesDir`, `saveNewStory`, `getStory`, `updateStoryRecord`, `listStories`; current-pointer coherence (`targetRevId === manifest.currentRevisionId`) plus `snapshot.revisionId === targetRevId` binding with historical-read preservation.
+- `src/script/planner.js`: imports containment helpers; pre-lock/pre-read/pre-mkdir/pre-write validation in `reviewStoryNode`.
+- `src/script/dag.js`: per-node strongest-type tracking (`identity > continuity/take_selection`) with revisit/upgrade and order-independent propagation in `computeSemanticInvalidations`.
+- `src/script/schema.js`: BigInt `gcdBigInt`/`reduceRationalBigInt`; `reduceRational` accepts BigInt exact products with checked safe-integer boundary; `parseRationalFps` requires safe-integer components; `calculateTimelineDuration` multiplies in BigInt.
+- New regressions (non-overlapping): `tests/w08-physical-containment.test.js` (A), `tests/w08-coherence.test.js` (B), `tests/w08-mixed-strength.test.js` (C), `tests/w08-rational-exact.test.js` (D).
+- This progress record; durable evidence in `qa-output/2026-10-11/w08-four-family-repair/`.
+
+### 9.2 Verification (actual exits/counts)
+- `npm run lint` → exit `0`, 0 errors/warnings.
+- `npm run typecheck` → exit `0`, 66 src/scripts files.
+- `npm run build` → exit `0`, `dist/index.js` contains `assertFileContained`, `bestType`, `reduceRationalBigInt`.
+- `npm test` → **689 passed, 3 skipped, 0 failed** across 94 passed / 1 skipped files (prior baseline 676/91; +13 new regression tests).
+- W08 suite → **62 passed across 10 files** (prior 49/6).
+- `tests/dynamic-catalog.test.js` alternate HOME → 17/17.
+- `npm pack --dry-run` → 19 files; `npm pack` tarball installs and runs.
+- Installed MCP (outside repo/CWD): `flow_script_create/status/review/update` lifecycle rev 3, legacy `flow_story_status` rev 1, `scriptId` present, missing-digest isError, `canSpend:false`/`liveVerified:false`.
+- Wide 10-case matrix (`qa-output/w08-verify-10.mjs`): 10/10 safe or exact — coherence update/review `STORAGE_CORRUPT`, forged `revisionId` `STORAGE_CORRUPT`, 4 junction cases `INVALID_STORY_ID` with zero outside writes (`outsideDirectoryCreated:false`), mixed-strength `shot:c` stale, rational `9007199254740991/8` exact. Historical rev-1 read after rev-2 write still succeeds.
+- Adapter hashes unchanged: `8f143a7e…`, `bdd2d613…`, `da9e503d…`.
+
+### 9.3 Model provenance & safeguards
+- Executor: direct parent implementation (no separate OpenCode worker lanes launched); model family `muse-spark-1.3-contributor-free` (opencode provider), no silent Codex substitution, no provider blocker.
+- Verification scripts kept under ignored `qa-output/`; no source lint/test contamination. All user modifications preserved; no Gateway-A regressions.
+
+### 9.4 Parent independent acceptance of the four-family repairs
+
+- Accepted families A-D for the current no-spend local planning/storage snapshot. Parent executed in a fresh isolated source copy with independent dependencies; implementation source hashes stayed unchanged. This is repair-scope acceptance, not W09-W13, live generation, a story executor or film-delivery certification.
+- Replayed all 39 saved counterexamples (14 original + 15 subsequent + 10 four-family cases) and programmatically verified their expected outcomes. Read-back confirmed no new outside-HOME snapshots/directories; existing outside fixture revisions remained revision 1. Genuine historical reads passed the coherence regression suite.
+- Final default-forks full run: `npm test -- --maxWorkers=2 --minWorkers=1 --reporter=json --reporter=hanging-process` exited 0; 689 passed, 3 platform skips, zero failures, 95 collected files (94 with passing tests, one skip-only file). Independent threads-pool full run also exited 0 with identical totals. W08 basename-filtered subtotal: 62 passed across 10 files.
+- Runner caveat preserved: the initial forks run returned 1 despite success:true and zero assertion failures; a single-worker retry reached a 300-second timeout. No source edits or assertion exclusions were used. Subsequent default-forks and threads full runs exited 0; the transient runner/process-lifecycle cause remains unestablished and is recorded in the evidence.
+- Lint, syntax (66 files), build, clean/runtime-fixture package dry-runs (19 entries), alternate FLOW_HOME (17 tests), and actual installed-tarball initialized script/legacy MCP lifecycle checks passed. Script status returned scriptId, missing digest failed closed, and planning responses remained non-spend/live-unverified.
+- Independent OpenCode read-only review used exactly `opencode/muse-spark-1.3-contributor-free`, verified from exported assistant metadata in session `ses_ed636b2f5ffeDpOSe7WrAodIOm`. No confirmed static defects in the assigned repairs. Author's implementation remains recorded as parent-direct; independent review is not an implementation-worker provenance claim.
+- All three accepted Gate A adapter SHA-256 identities remain unchanged. No live Flow access, remote generation, credit spend, staging, commits or pushes. Stopped before W09-W13. The earlier `w08-repair-continuation-prompt.txt` is historical for these now-closed families, not a reason to redo them.
+- Durable parent evidence: `qa-output/2026-10-11/w08-four-family-independent-609vlowt/independent-acceptance.json`, source hashes, canonical reports/logs, all probe results/scripts, installed SDK results, and independent review.
+
