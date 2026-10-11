@@ -7,9 +7,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const scriptName = process.argv[2];
-if (!scriptName) {
-  console.error('Error: Script name argument is required (e.g. node scripts/run.js start-browser).');
-  process.exit(1);
+if (!scriptName || scriptName === '--help' || scriptName === '-h') {
+  console.log(`google-flow-mcp runner: node scripts/run.js <command> [args]
+Commands: start-browser, start-mcp, register, test-flow-image
+Safe modes: every command supports --help and --dry-run (no side effects).
+Examples:
+  node scripts/run.js --help
+  node scripts/run.js register --dry-run`);
+  process.exit(0);
 }
 
 const isWin = process.platform === 'win32';

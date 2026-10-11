@@ -15,6 +15,22 @@
 
 $ErrorActionPreference = 'Stop'
 
+param(
+    [switch]$DryRun,
+    [switch]$Help
+)
+
+# Safe modes BEFORE any side effect (no port checks, no Chrome launch below).
+foreach ($a in $args) {
+    if ($a -eq '--help' -or $a -eq '-h') { $Help = $true }
+    if ($a -eq '--dry-run') { $DryRun = $true }
+}
+if ($Help) {
+    Write-Host 'start-browser.ps1 [-DryRun] [-Help] (also accepts --dry-run / --help)'
+    Write-Host 'Safe modes: -Help prints this text; -DryRun prints the resolved Chrome path, profile and CDP port without launching anything.'
+    exit 0
+}
+
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir  = Split-Path -Parent $ScriptDir
 $ConfigPath  = Join-Path $ProjectDir 'config\flow.config.json'
@@ -46,6 +62,15 @@ if (Test-Path $ConfigPath) {
     } catch {
         Write-Warn "Could not parse $ConfigPath - using defaults. ($($_.Exception.Message))"
     }
+}
+
+if ($DryRun) {
+    if (-not (Test-Path $ChromePath)) {
+        Write-Log "--dry-run: Chrome executable unresolved at `"$ChromePath`"; would launch profile=`"$Profile`" cdpPort=$CdpPort (nothing launched)."
+    } else {
+        Write-Log "--dry-run: would launch `"$ChromePath`" profile=`"$Profile`" cdpPort=$CdpPort userDataDir=`"$UserDataDir`" (nothing launched)."
+    }
+    exit 0
 }
 
 if (-not (Test-Path $ChromePath)) {

@@ -7,7 +7,9 @@ import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import os from 'os';
 import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platform.js';
-import { isFlowUrl } from '../utils/sanitize.js';
+import { selectFlowTab, checkHeadlessOption } from './session.js';
+import { getSessionScope } from './session-scope.js';
+import { getUiLease, assertUiCurrent } from './ui-transaction.js';
 
 let browser = null;
 let context = null;
@@ -26,6 +28,17 @@ function isPageAlive(p) {
 }
 
 export function isBrowserConnected() {
+  const scope = getSessionScope();
+  if (scope && ('page' in scope || 'browser' in scope || 'connection' in scope)) {
+    try {
+      const scopedBrowser = scope.browser ?? scope.connection ?? null;
+      if (scopedBrowser && typeof scopedBrowser.isConnected === 'function'
+        && !scopedBrowser.isConnected()) return false;
+      return isPageAlive(scope.page ?? null);
+    } catch {
+      return false;
+    }
+  }
   try {
     if (!isConnected || !browser) return false;
     if (!browser.isConnected()) return false;
@@ -36,7 +49,9 @@ export function isBrowserConnected() {
 }
 
 async function attachToExisting(cdpUrl) {
+  const epoch = getUiLease().getEpoch();
   const existing = await chromium.connectOverCDP(cdpUrl);
+  assertUiCurrent(epoch);
   const contexts = existing.contexts();
   let ctx = contexts[0] || null;
   // connectOverCDP to a real Chrome should always have a context; only
@@ -44,21 +59,21 @@ async function attachToExisting(cdpUrl) {
   if (!ctx) {
     logger.warn('CDP has no contexts — creating a fresh one (no profile cookies)');
     ctx = await existing.newContext();
+    assertUiCurrent(epoch);
   }
   const pages = ctx.pages();
-  // Prefer a Flow tab if one exists; avoid chrome:// / devtools pages.
-  let pg = pages.find(p => {
-    try {
-      const u = p.url();
-      return isFlowUrl(u);
-    } catch { return false; }
-  }) || pages.find(p => {
-    try {
-      const u = p.url();
-      return u.startsWith('http') && !u.startsWith('chrome');
-    } catch { return false; }
-  }) || pages[0] || await ctx.newPage();
-  return { browser: existing, context: ctx, page: pg, reused: true };
+  // W02: prefer a Flow tab; never repurpose another personal tab.
+  // No Flow tab -> dedicated new tab (caller navigates it to Flow).
+  const urls = pages.map((p) => { try { return { url: p.url() }; } catch { return { url: '' }; } });
+  const sel = selectFlowTab(urls);
+  let pg;
+  if (sel.action === 'reuse' && pages[sel.index]) {
+    pg = pages[sel.index];
+  } else {
+    pg = await ctx.newPage();
+    assertUiCurrent(epoch);
+  }
+  return { browser: existing, context: ctx, page: pg, reused: sel.action === 'reuse' };
 }
 
 export async function connectToBrowser(options = {}) {
@@ -117,6 +132,10 @@ async function launchNewBrowser(cdpPort, options = {}) {
   }
 
   const headlessOpt = options.headless ?? get('headless', false);
+  const headlessCheck = checkHeadlessOption(headlessOpt);
+  if (!headlessCheck.supported) {
+    throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR, headlessCheck.blocker);
+  }
   const args = [
     `--remote-debugging-port=${cdpPort}`,
     `--user-data-dir=${profileDir}`,
@@ -125,10 +144,6 @@ async function launchNewBrowser(cdpPort, options = {}) {
     '--disable-blink-features=AutomationControlled',
     `--window-size=1920,1080`,
   ];
-
-  if (headlessOpt) {
-    args.push('--headless=new');
-  }
 
   // Do NOT kill a user's existing Chrome on this port. If something is already
   // listening, reuse it instead of closing it (closing kills all user tabs).
@@ -176,6 +191,8 @@ async function launchNewBrowser(cdpPort, options = {}) {
  * launches Chrome via shell, then connects Playwright via CDP.
  */
 export async function launchChromeDirect(options = {}) {
+  const epoch = getUiLease().getEpoch();
+  assertUiCurrent(epoch);
   const chromePath = options.chromePath || get('chromeExecutable') || getDefaultChromePath();
   const cdpPort = options.cdpPort || get('cdpPort', 9222);
   const headless = options.headless ?? get('headless', false);
@@ -189,6 +206,10 @@ export async function launchChromeDirect(options = {}) {
   }
   if (connectPromise) return connectPromise;
   connectPromise = (async () => {
+    const headlessCheck = checkHeadlessOption(headless);
+    if (!headlessCheck.supported) {
+      throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR, headlessCheck.blocker);
+    }
     if (!chromePath || !fs.existsSync(chromePath)) {
       throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR,
         `Chrome not found${chromePath ? ` at ${chromePath}` : ''}. Set "chromeExecutable" in config/flow.config.json to your Chrome install path.`);
@@ -198,6 +219,7 @@ export async function launchChromeDirect(options = {}) {
     // Never kill the user's browser — closing the CDP browser kills all tabs.
     try {
       const attached = await attachToExisting(`http://127.0.0.1:${cdpPort}`);
+      assertUiCurrent(epoch);
       browser = attached.browser;
       context = attached.context;
       page = attached.page;
@@ -206,11 +228,14 @@ export async function launchChromeDirect(options = {}) {
       wireDisconnectHandler();
       logger.info('Reusing running Chrome via CDP (no new launch needed)');
       return { browser, context, page };
-    } catch {
+    } catch (error) {
+      if (error.code === 'STALE_EPOCH') throw error;
+      assertUiCurrent(epoch);
       // Nothing listening — fall through to direct launch.
     }
 
     const { randomUUID } = await import('crypto');
+    assertUiCurrent(epoch);
     const tempDir = path.join(os.tmpdir(), `chrome-kiara-cdp-${Date.now()}-${randomUUID().slice(0, 8)}`);
     fs.mkdirSync(tempDir, { recursive: true });
 
@@ -253,6 +278,7 @@ export async function launchChromeDirect(options = {}) {
     const cdpUrl = `http://127.0.0.1:${cdpPort}`;
     let attempts = 0;
     while (attempts < 20) {
+      assertUiCurrent(epoch);
       try {
         const resp = await fetch(`${cdpUrl}/json/version`);
         if (resp.ok) break;
@@ -264,11 +290,17 @@ export async function launchChromeDirect(options = {}) {
       throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR, 'Chrome CDP failed to start in time');
     }
 
-    browser = await chromium.connectOverCDP(cdpUrl);
-    const ctxs = browser.contexts();
-    context = ctxs[0] || await browser.newContext();
-    const pgs = context.pages();
-    page = pgs[0] || await context.newPage();
+    const acquiredBrowser = await chromium.connectOverCDP(cdpUrl);
+    assertUiCurrent(epoch);
+    const ctxs = acquiredBrowser.contexts();
+    const acquiredContext = ctxs[0] || await acquiredBrowser.newContext();
+    assertUiCurrent(epoch);
+    const pgs = acquiredContext.pages();
+    const acquiredPage = pgs[0] || await acquiredContext.newPage();
+    assertUiCurrent(epoch);
+    browser = acquiredBrowser;
+    context = acquiredContext;
+    page = acquiredPage;
     isConnected = true;
     global.__chromeTempDir = tempDir;
     wireDisconnectHandler();
@@ -336,6 +368,13 @@ export async function closeBrowser() {
 }
 
 export function getPage() {
+  const scope = getSessionScope();
+  if (scope && Object.prototype.hasOwnProperty.call(scope, 'page')) {
+    if (!isPageAlive(scope.page)) {
+      throw new FlowError(ErrorCodes.BROWSER_NOT_CONNECTED, 'Scoped browser page is not connected or was closed.');
+    }
+    return scope.page;
+  }
   if (!isPageAlive(page) || !isConnected) {
     throw new FlowError(ErrorCodes.BROWSER_NOT_CONNECTED, 'Browser not connected or page was closed. Call flow_connect first.');
   }

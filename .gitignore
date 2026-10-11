@@ -19,3 +19,23 @@ scripts/test-mention-reference.mjs
 ui_ss/
 dist/
 AUDIT_LOG.untracked.md
+
+# Local QA captures, worker copies and generated verification artifacts
+/qa-output/
+/reliability-evidence/
+/evidence-v2/
+/staging/
+/coverage/
+/.npm-cache/
+/*.tgz
+
+# Local manual-test inputs and chat handoff notes (keep plans/progress trackable)
+/char-test.json
+/continuation-prompt.txt
+/gate-a-continuation-prompt.txt
+
+# Local environment overrides; retain distributable templates
+/.env.*
+!/.env.example
+!/.env.sample
+!/.env.template

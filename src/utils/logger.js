@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getFlowHome } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-function findLogDir() {
+function findRepoLogDir() {
   // src/utils -> ../../logs (dev); dist -> ../logs (bundled prod)
   for (const cand of [path.resolve(__dirname, '../../logs'), path.resolve(__dirname, '../logs')]) {
     try {
@@ -14,14 +15,21 @@ function findLogDir() {
   }
   return path.resolve(__dirname, '../../logs');
 }
-const LOG_DIR = findLogDir();
+function currentLogDir() {
+  try {
+    return path.join(getFlowHome(), 'logs');
+  } catch {
+    return findRepoLogDir();
+  }
+}
 
 let logStream = null;
 let logDate = null;
+let logDirActive = null;
 
-function ensureLogDir() {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+function ensureLogDir(dir) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -31,18 +39,29 @@ function todayStr() {
 
 function getLogStream() {
   const today = todayStr();
+  const dir = currentLogDir();
   // Reopen on day rollover (fixes midnight bug where old stream is cached forever)
-  if (!logStream || logDate !== today) {
-    try { logStream?.end(); } catch { /* ignore */ }
-    ensureLogDir();
-    const logFile = path.join(LOG_DIR, `flow-${today}.log`);
+  if (!logStream || logDate !== today || logDirActive !== dir) {
+    dropStream();
+    ensureLogDir(dir);
+    const logFile = path.join(dir, `flow-${today}.log`);
     logStream = fs.createWriteStream(logFile, { flags: 'a' });
     logStream.on('error', (e) => {
       process.stderr.write(`[logger] file write failed: ${e.message}\n`);
+      dropStream();
     });
     logDate = today;
+    logDirActive = dir;
   }
   return logStream;
+}
+
+function dropStream() {
+  const s = logStream;
+  logStream = null;
+  logDate = null;
+  logDirActive = null;
+  try { s?.end(); } catch { /* ignore */ }
 }
 
 function timestamp() {
@@ -57,11 +76,12 @@ function writeLine(line) {
     getLogStream().write(line + '\n');
   } catch (e) {
     process.stderr.write(`[logger] stream write failed: ${e.message}\n`);
+    dropStream();
   }
 }
 
 export function getLogDir() {
-  return LOG_DIR;
+  return currentLogDir();
 }
 
 export function closeLogger() {
@@ -70,6 +90,7 @@ export function closeLogger() {
     const s = logStream;
     logStream = null;
     logDate = null;
+    logDirActive = null;
     s.end(() => resolve());
   });
 }
@@ -102,7 +123,7 @@ export const logger = {
     } else {
       try {
         getLogStream().write(line + '\n');
-      } catch { /* ignore */ }
+      } catch { dropStream(); }
     }
   }
 };

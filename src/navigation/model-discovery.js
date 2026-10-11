@@ -14,113 +14,254 @@ const VIDEO_HINTS = ['veo', 'omni', 'kling', 'sora', 'seedance', 'hailuo', 'wan'
  * (caller decides fallback). Returns { imageModels, videoModels, ratios,
  * durations, source: 'live' } or null when the UI yields nothing usable.
  */
+/**
+ * Discover available models/ratios/durations from Flow's own UI.
+ * Parent #1 correction: uses opened.panel (verified settings owner), never the
+ * first generic dialog; expands the actual nested model dropdown to enumerate
+ * enabled exact option rows (Pro/Lite/2.1); selects Image/Video deliberately
+ * and restores full original settings/composer or returns restored:false;
+ * never creates a project for read-only refresh (honest blocker when missing
+ * project context and allowCreate !== true).
+ * Best-effort: never throws (caller decides fallback). Returns catalog with
+ * source live + binding, or null when blocked/unusable.
+ */
 export async function discoverModels(page, opts = {}) {
   const timeoutMs = opts.timeoutMs || 25000;
   const deadline = Date.now() + timeoutMs;
+  const allowCreate = opts.allowCreate === true;
   try {
-    await ensureProjectInContext(page, {
-      name: opts.project_name,
-      campaign: opts.campaign,
-    });
-
-    // Open the tune/settings panel (chat UI) — try known triggers.
-    // New Flow UI renders Material icon ligatures ("tune", "settings_2") as
-    // button text, so match those as well as aria-labels.
-    const { getSelectors } = await import('../utils/selectors.js');
-    const triggers = getSelectors('settingsTrigger').map(sel =>
-      page.locator(sel).first()
-    );
-    let opened = false;
-    for (const t of triggers) {
-      if (Date.now() > deadline) break;
-      try {
-        if (await t.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await t.click({ timeout: 5000 }).catch(() => {});
-          await page.waitForTimeout(1000);
-          opened = true;
-          break;
-        }
-      } catch { /* next trigger */ }
-    }
-    if (!opened) {
-      logger.warn('Model discovery: settings panel did not open');
+    // Read-only guard: no project creation for refresh on missing project.
+    let inProject = false;
+    try {
+      inProject = String(page.url() || '').includes('/project/');
+    } catch { inProject = false; }
+    if (!inProject && !allowCreate) {
+      logger.warn('Model discovery blocked: no project context (read-only, no creation)', { url: (() => { try { return page.url(); } catch { return ''; } })() });
       return null;
     }
+    if (!inProject && allowCreate) {
+      await ensureProjectInContext(page, {
+        name: opts.project_name,
+        campaign: opts.campaign,
+      });
+    } else if (inProject && (opts.project_name || opts.campaign)) {
+      // Already in a project: reuse in place, never reload for read-only
+      // discovery (F08 preservation). Only navigate when explicitly requested
+      // via allowCreate + different target (handled by caller).
+    }
 
-    // Enumerate candidate option texts — ONLY inside the open tune panel
-    // (dialog/menu/listbox). Never fall back to document scope: the Agent
-    // chat panel contains suggestion cards ("Nano Banana 2 ...") that would
-    // contaminate the catalog with non-model text.
-    const panelHandle = await page.locator('[role="dialog"], [role="menu"], [role="listbox"]').first()
-      .elementHandle().catch(() => null);
-    if (!panelHandle) {
-      logger.warn('Model discovery: no tune panel container found');
-      await takeScreenshot(page, 'models-no-panel');
+    const safe = await import('../browser/safe-actions.js');
+    const { openBarSettings, readToolState, setPromptBarMode, closeSettingsPanel } = safe;
+    if (Date.now() > deadline) return null;
+
+    // Snapshot entry settings/composer for restore (mode + model row).
+    let entryState = null;
+    try {
+      entryState = await readToolState(page).catch(() => null);
+    } catch { entryState = null; }
+    const entryMode = entryState?.mode === 'video' ? 'Video' : entryState?.mode === 'image' ? 'Image' : null;
+    const entryModel = entryState?.model && entryState.model !== 'unknown' ? entryState.model : null;
+
+    // Open via verified single composer driver; use opened.panel owner directly.
+    let opened = null;
+    try {
+      opened = await openBarSettings(page);
+    } catch {
+      opened = null;
+    }
+    if (!opened?.panel) {
+      logger.warn('Model discovery: verified composer settings did not open', { detail: opened?.error });
       return null;
     }
-    const texts = await page.evaluate((root) => {
-      const els = Array.from(root.querySelectorAll(
-        '[role="option"], [role="menuitem"], [role="tab"], li, button'
-      ));
-      return els
-        .map(e => (e.textContent || '').trim().replace(/\s+/g, ' '))
-        .filter(t => t.length > 0 && t.length < 60);
-    }, panelHandle).catch(() => []);
-    const uniqTexts = [...new Set(texts)];
+    const panel = opened.panel;
 
     const imageModels = [];
     const videoModels = [];
     const ratios = [];
     const durations = [];
-    for (const t of uniqTexts) {
-      const lower = t.toLowerCase();
-      if (/^\d+\s*:\s*\d+$/.test(t)) {
-        const r = t.replace(/\s+/g, '');
-        if (!ratios.includes(r)) ratios.push(r);
-        continue;
+    const pushUnique = (arr, name) => {
+      if (!name) return;
+      if (!arr.some((m) => m.toLowerCase() === String(name).toLowerCase())) arr.push(name);
+    };
+    const cleanModelName = (t) => String(t)
+      .replace(/^[\p{Emoji}\p{So}\u2000-\u2BFF]+\s*/u, '')
+      .replace(/arrow_drop_down|arrow_drop_up|apps_spark_2|volume_up/gi, '')
+      .trim().replace(/\s+/g, ' ');
+
+    // Deliberately select Image then Video to enumerate both dropdowns.
+    const modes = opts.modes && Array.isArray(opts.modes) && opts.modes.length > 0 ? opts.modes : ['Image', 'Video'];
+    for (const mode of modes) {
+      if (Date.now() > deadline) break;
+      try {
+        const setMode = await setPromptBarMode(page, mode).catch(() => null);
+        if (!setMode?.ok) {
+          // Mode switch unverified: still attempt enumeration of current panel,
+          // but record that this mode was not deliberately selected.
+          logger.warn('Model discovery: mode select unverified', { mode, detail: setMode?.detail });
+        }
+      } catch { /* continue with current panel */ }
+      // Re-open (mode switches re-render the panel) and use the fresh owner.
+      let cur = null;
+      try {
+        cur = await openBarSettings(page);
+      } catch { cur = null; }
+      const curPanel = cur?.panel || panel;
+      // Enumerate static rows (ratios/durations) inside the owning panel.
+      const rows = await enumeratePanelRows(page, curPanel).catch(() => ({ ratios: [], durations: [] }));
+      for (const r of rows.ratios || []) {
+        const v = String(r).replace(/\s+/g, '');
+        if (v && !ratios.includes(v)) ratios.push(v);
       }
-      if (/^\d+\s*s$/i.test(t)) {
-        const d = t.replace(/\s+/g, '').toLowerCase();
-        if (!durations.includes(d)) durations.push(d);
-        continue;
+      for (const d of rows.durations || []) {
+        const v = String(d).replace(/\s+/g, '').toLowerCase();
+        if (v && !durations.includes(v)) durations.push(v);
       }
-      if (IMAGE_HINTS.some(h => lower.includes(h))) {
-        if (!imageModels.some(m => m.toLowerCase() === lower)) imageModels.push(t);
-        continue;
-      }
-      if (VIDEO_HINTS.some(h => lower.includes(h))) {
-        if (!videoModels.some(m => m.toLowerCase() === lower)) videoModels.push(t);
+      // Expand the nested model dropdown and enumerate enabled exact rows.
+      const models = await enumerateModelDropdown(page, curPanel).catch(() => []);
+      for (const m of models) {
+        if (!m || m.enabled === false) continue;
+        const name = cleanModelName(m.name || '');
+        if (!name) continue;
+        const lower = name.toLowerCase();
+        if (IMAGE_HINTS.some((h) => lower.includes(h))) pushUnique(imageModels, name);
+        else if (VIDEO_HINTS.some((h) => lower.includes(h))) pushUnique(videoModels, name);
       }
     }
 
-    await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(400);
-    // Second Escape clears any overlay backdrop the panel left behind.
-    const blocked = await page.locator('.cdk-overlay-backdrop-showing').first().isVisible().catch(() => false);
-    if (blocked) {
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(400);
+    // Restore full original settings/composer or invalidate.
+    let restored = true;
+    try {
+      if (entryMode) {
+        const backMode = await setPromptBarMode(page, entryMode).catch(() => null);
+        if (!backMode?.ok) restored = false;
+      }
+      if (entryModel) {
+        const { setPromptBarModel } = safe;
+        const backModel = await setPromptBarModel(page, entryModel).catch(() => null);
+        if (!backModel?.ok) restored = false;
+      }
+    } catch { restored = false; }
+    try {
+      await closeSettingsPanel(page).catch(() => {});
+    } catch { /* ignore */ }
+    // Verify restore by readback when we had an entry snapshot.
+    if (entryModel || entryMode) {
+      try {
+        const after = await readToolState(page).catch(() => null);
+        if (entryModel && after?.model && after.model !== 'unknown') {
+          const { isModelLiveVerified } = await import('../utils/models.js');
+          if (!isModelLiveVerified(entryModel, after.model)) restored = false;
+        }
+      } catch { /* keep restored flag */ }
     }
 
     if (videoModels.length === 0 && imageModels.length === 0) {
-      logger.warn('Model discovery: no model options recognized', { scanned: uniqTexts.length });
+      logger.warn('Model discovery: no model options enumerated from nested dropdowns');
       await takeScreenshot(page, 'models-not-found');
       return null;
     }
+    const now = new Date().toISOString();
+    let projectId = null;
+    try {
+      const url = page.url();
+      const m = String(url || '').match(/\/project\/([a-zA-Z0-9-]+)/);
+      if (m) projectId = m[1];
+    } catch { /* ignore */ }
     const catalog = {
       imageModels, videoModels, ratios, durations,
-      discoveredAt: new Date().toISOString(),
+      discoveredAt: now,
+      observedAt: now,
       source: 'live',
+      provenance: 'live',
+      accountKey: opts.accountKey || null,
+      projectId: opts.projectId || projectId,
+      restored,
     };
+    if (!restored) {
+      logger.warn('Model discovery: restore unverified — preparation/approval invalidated', { entryMode, entryModel });
+    }
     saveCatalog(catalog);
-    logger.info('Models discovered live from Flow UI', {
-      video: videoModels, image: imageModels, ratios, durations,
+    logger.info('Models discovered live from nested dropdowns', {
+      video: videoModels, image: imageModels, ratios, durations, restored,
     });
     return catalog;
   } catch (e) {
     logger.warn('Model discovery failed (using cache/fallback)', { error: e.message });
     return null;
   }
+}
+
+/**
+ * Enumerate ratio/duration rows owned by the settings panel (no dropdown).
+ */
+async function enumeratePanelRows(page, panel) {
+  const handle = await panel.elementHandle().catch(() => null);
+  if (!handle) return { ratios: [], durations: [] };
+  const texts = await page.evaluate((root) => {
+    const els = Array.from(root.querySelectorAll('[role="option"], [role="menuitem"], [role="tab"], li, button'));
+    return els
+      .map((e) => ((e.innerText || e.textContent) || '').trim().replace(/\s+/g, ' '))
+      .filter((t) => t.length > 0 && t.length < 60);
+  }, handle).catch(() => []);
+  const ratios = [];
+  const durations = [];
+  for (const t of [...new Set(texts)]) {
+    if (/^\d+\s*:\s*\d+$/.test(t)) ratios.push(t);
+    else if (/^\d+\s*s$/i.test(t)) durations.push(t);
+  }
+  return { ratios, durations };
+}
+
+/**
+ * Expand the nested model dropdown owned by the settings panel and enumerate
+ * enabled exact option rows. Reads the owning expanded overlay (not the first
+ * generic dialog), filters disabled/aria-disabled, closes the dropdown.
+ * Returns [{ name, enabled }].
+ */
+async function enumerateModelDropdown(page, panel) {
+  // Find the model row inside the owning panel.
+  const row = panel.locator('button.mat-mdc-menu-trigger').first();
+  let rowVisible = false;
+  try {
+    rowVisible = await row.isVisible({ timeout: 3000 }).catch(() => false);
+  } catch { rowVisible = false; }
+  let trigger = rowVisible ? row : panel.locator('button').filter({ hasText: /nano|banana|imagen|veo|omni/i }).first();
+  try {
+    if (!(await trigger.isVisible({ timeout: 3000 }).catch(() => false))) return [];
+  } catch { return []; }
+  await trigger.click({ timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(1200);
+  // Owning expanded overlay: the visible pane that contains model options and
+  // is NOT the settings panel itself. Poll for it (menu animation over CDP).
+  let options = [];
+  for (let i = 0; i < 10 && options.length === 0; i++) {
+    if (i > 0) await page.waitForTimeout(500);
+    options = await page.evaluate(() => {
+      const out = [];
+      for (const pane of document.querySelectorAll('.cdk-overlay-pane')) {
+        const r = pane.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+        const items = pane.querySelectorAll('flow-menu-item, [role="option"], [role="menuitem"], li, button, [mat-menu-item]');
+        for (const el of items) {
+          const er = el.getBoundingClientRect();
+          if (er.width === 0 && er.height === 0) continue;
+          const cls = ((el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className) || '').toString();
+          if (/menu-trigger/.test(cls)) continue;
+          const t = ((el.innerText || el.textContent) || '').trim().replace(/\s+/g, ' ');
+          if (!t || t.length >= 80) continue;
+          if (!/nano|banana|imagen|veo|omni/i.test(t)) continue;
+          const disabled = !!(el.disabled || el.getAttribute('aria-disabled') === 'true');
+          out.push({ name: t.slice(0, 80), enabled: !disabled });
+        }
+        if (out.length > 0) break;
+      }
+      return out;
+    }).catch(() => []);
+  }
+  // Close the dropdown (one Escape closes overlay; settings panel stays per Flow).
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(400);
+  return options;
 }
 
 // Capability markers: option-row text patterns that indicate a model
@@ -325,16 +466,31 @@ export async function discoverCapabilities(page, opts = {}) {
     if (probed.length > 0) {
       const prev = loadCatalog() || {};
       const capabilities = { ...(prev.capabilities || {}) };
-      for (const p of probed) capabilities[String(p.model).toLowerCase()] = p.caps;
+      const capabilitiesMeta = { ...(prev.capabilitiesMeta || {}) };
+      const now = new Date().toISOString();
+      // W03 timestamps binding: per-combination evidence + observed/expiry.
+      const { CAPABILITY_MAX_AGE_MS } = await import('../browser/capabilities.js');
+      for (const p of probed) {
+        capabilities[String(p.model).toLowerCase()] = p.caps;
+        capabilitiesMeta[String(p.model).toLowerCase()] = {
+          observedAt: now,
+          expiresAt: new Date(Date.now() + CAPABILITY_MAX_AGE_MS).toISOString(),
+          evidence: 'settings-panel-row-scan',
+          restored,
+        };
+      }
       saveCatalog({
         ...prev,
         videoModels: Array.isArray(prev.videoModels) && prev.videoModels.length > 0
           ? prev.videoModels
           : models,
         capabilities,
-        capabilitiesObservedAt: new Date().toISOString(),
+        capabilitiesMeta,
+        capabilitiesObservedAt: now,
       });
     }
+    // W03 restore UI binding: if entry selection could be read but restore
+    // failed, preparation/approval is invalidated by the caller (restored:false).
     return { probed, skipped, restored, observedAt: new Date().toISOString() };
   } catch (e) {
     logger.warn('Capability discovery failed (keeping static caps)', { error: e.message });

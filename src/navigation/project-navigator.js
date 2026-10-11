@@ -3,6 +3,10 @@ import { get, getFlowHome } from '../utils/config.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { detectPageElements, pressSelectAll } from '../browser/safe-actions.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
+import { assertFlowUrl } from '../utils/sanitize.js';
+import { normalizeSidebarLabel } from '../browser/page-adapter.js';
+import { classifyAppState, isGuessedRoute } from '../browser/app-state.js';
+import { getUiLease } from '../browser/ui-transaction.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -27,6 +31,26 @@ export function buildProjectUrl(baseUrl, projectId) {
   // project URL like {base}/project/{id}
   const base = baseUrl.replace(/\/+$/, '');
   return `${base}/project/${projectId}`;
+}
+
+// W02 F08: in-place reuse helpers. Same project/campaign inspection must not
+// reload the page (which wipes the prepared composer).
+export function isSameProjectTarget(currentUrl, targetUrlOrId) {
+  if (!currentUrl || !targetUrlOrId) return false;
+  const currentId = extractProjectId(String(currentUrl));
+  if (!currentId) return false;
+  const target = String(targetUrlOrId);
+  const targetId = target.includes('/project/') ? extractProjectId(target) : target;
+  return !!targetId && currentId === targetId;
+}
+
+export function shouldReloadProject(currentUrl, requested = {}) {
+  // Explicit project_url targeting the page we are already on -> no reload.
+  if (requested.project_url && isSameProjectTarget(currentUrl, requested.project_url)) return false;
+  // Session-resume id targeting the page we are already on -> no reload.
+  if (requested.sessionProjectId && isSameProjectTarget(currentUrl, requested.sessionProjectId)) return false;
+  // Campaign/name matches are resolved to URLs by the caller; default reload.
+  return true;
 }
 
 export function loadProjects() {
@@ -107,8 +131,40 @@ export async function listExistingProjects(page) {
  * Strategy A: click the title element directly → select-all → type new name → Enter
  * Strategy B: click the ⋮ more-options menu → click Rename → fill input → Enter
  */
-export async function renameCurrentProject(page, newName) {
-  if (!newName) return false;
+export const RENAME_BUDGET_MS = 12000;
+
+// W02 F14: bounded verified rename states. The actual project ID is always
+// preserved; a failed/pending rename never creates a duplicate project.
+export function classifyRenameResult({ attempted, verified, projectId, name, elapsedMs = 0 } = {}) {
+  if (!name || attempted === false) {
+    return { state: 'failed', projectId: projectId || null, name: name || null, verified: false, duplicateCreated: false, elapsedMs };
+  }
+  if (verified) {
+    return { state: 'renamed', projectId: projectId || null, name, verified: true, duplicateCreated: false, elapsedMs };
+  }
+  // Attempted but unverified: pending when budget remains, else failed.
+  const state = elapsedMs < RENAME_BUDGET_MS ? 'pending' : 'failed';
+  return { state, projectId: projectId || null, name, verified: false, duplicateCreated: false, elapsedMs };
+}
+
+// W02 detailed rename for W06: bounded, hydration-aware, read-back verified.
+export async function renameProjectVerified(page, newName, opts = {}) {
+  const started = Date.now();
+  const elapsed = () => Date.now() - started;
+  const budgetMs = opts.budgetMs ?? RENAME_BUDGET_MS;
+  const projectId = (() => { try { return extractProjectId(page.url()); } catch { return null; } })();
+  if (!newName) return classifyRenameResult({ attempted: false, verified: false, projectId, name: newName, elapsedMs: elapsed() });
+  const attempted = await renameCurrentProjectInner(page, newName, budgetMs, started);
+  let verified = false;
+  try {
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 4000) || '').catch(() => '');
+    verified = attempted && String(bodyText || '').includes(newName);
+  } catch { verified = false; }
+  return classifyRenameResult({ attempted, verified, projectId, name: newName, elapsedMs: elapsed() });
+}
+
+async function renameCurrentProjectInner(page, newName, budgetMs, started) {
+  const remaining = () => budgetMs - (Date.now() - started);
   logger.info('Renaming project...', { newName });
 
   // --- Strategy A: ⋮ more-options menu (top-left header) → Rename ---
@@ -125,6 +181,7 @@ export async function renameCurrentProject(page, newName) {
 
     let menuOpened = false;
     for (const sel of moreMenuSelectors) {
+      if (remaining() <= 0) break;
       const btn = page.locator(sel).first();
       if (await btn.isVisible().catch(() => false)) {
         await btn.click();
@@ -185,6 +242,7 @@ export async function renameCurrentProject(page, newName) {
   ];
 
   for (const sel of titleSelectors) {
+    if (remaining() <= 0) break;
     try {
       const el = page.locator(sel).first();
       if (!(await el.isVisible().catch(() => false))) continue;
@@ -215,6 +273,16 @@ export async function renameCurrentProject(page, newName) {
   await takeScreenshot(page, 'rename-project-failed');
   logger.warn('Could not rename project — no matching ⋮ menu or title element found');
   return false;
+}
+
+export async function renameCurrentProject(page, newName) {
+  if (!newName) return false;
+  const deadline = Date.now() + RENAME_BUDGET_MS;
+  const started = Date.now();
+  const ok = await renameCurrentProjectInner(page, newName, RENAME_BUDGET_MS, started);
+  if (Date.now() > deadline) logger.warn('Rename hit bounded budget', { budgetMs: RENAME_BUDGET_MS });
+  void deadline;
+  return ok;
 }
 
 /**
@@ -398,9 +466,16 @@ export async function ensureProjectInContext(page, context = {}) {
 
   // Direct URL jump: project_url (must be a Flow /project/ URL) always wins.
   // Used to repair misnamed projects or target one registry duplicates confuse.
+  // W02 F08: already on the requested project -> reuse in place, no reload.
   if (context.project_url && context.project_url.includes('/project/')) {
-    const { assertFlowUrl } = await import('../utils/sanitize.js');
     const target = assertFlowUrl(context.project_url);
+    if (!shouldReloadProject(currentUrl, { project_url: target })) {
+      logger.info('Already on requested project — reusing in place (no reload)', { url: currentUrl });
+      _sessionProjectId = extractProjectId(currentUrl);
+      touchProject(_sessionProjectId);
+      await maybeApplyName(_sessionProjectId);
+      return { url: currentUrl, reused: true, projectId: _sessionProjectId };
+    }
     logger.info('Navigating directly to project URL', { url: target });
     if (!(await gotoProject(page, target, 'direct-url'))) {
       throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND,
@@ -447,7 +522,14 @@ export async function ensureProjectInContext(page, context = {}) {
 
   if (!context.forceNew) {
     // Reuse the session project by navigating directly to its URL via ID
+    // W02 F08: same-project session resume reuses in place without reload.
     if (_sessionProjectId) {
+      if (isSameProjectTarget(currentUrl, _sessionProjectId)) {
+        logger.info('Session project already targeted — reusing in place (no reload)', { projectId: _sessionProjectId });
+        touchProject(_sessionProjectId);
+        await maybeApplyName(_sessionProjectId);
+        return { url: currentUrl, reused: true, projectId: _sessionProjectId };
+      }
       const targetUrl = buildProjectUrl(flowUrl, _sessionProjectId);
       logger.info('Resuming session project by ID', { projectId: _sessionProjectId, url: targetUrl });
       if (await gotoProject(page, targetUrl, 'session-resume')) {
@@ -549,8 +631,19 @@ export async function waitForProjectShell(page, opts = {}) {
     'button:has-text("All media")',
     'a:has-text("Characters")',
     'button:has-text("Characters")',
+    'mat-list-item',
   ];
   while (Date.now() < deadline) {
+    // F10: fail fast on error/auth pages; loading is not ready.
+    try {
+      const title = await page.title().catch(() => '');
+      const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
+      const st = classifyAppState({ url: page.url(), title, bodyText });
+      if (st.app === 'error_404' || st.app === 'auth_needed') {
+        logger.warn('Project shell blocked by app state', { app: st.app });
+        return false;
+      }
+    } catch { /* ignore probes */ }
     for (const sel of markers) {
       try {
         const el = page.locator(sel).first();
@@ -574,6 +667,11 @@ export async function waitForProjectShell(page, opts = {}) {
 async function gotoProject(page, url, label) {
   logger.info('Navigating to project', { label, url });
   try {
+    const guess = isGuessedRoute(url);
+    if (guess.guessed) {
+      logger.warn('Refusing guessed project/tool route', { url, reason: guess.reason });
+      return false;
+    }
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(2000);
@@ -581,6 +679,16 @@ async function gotoProject(page, url, label) {
       logger.warn('Project navigation landed outside a project', { url: page.url(), label });
       return false;
     }
+    // F10: 404/auth pages are not usable app state even under a Flow URL.
+    try {
+      const title = await page.title().catch(() => '');
+      const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
+      const st = classifyAppState({ url: page.url(), title, bodyText });
+      if (st.app === 'error_404' || st.app === 'auth_needed') {
+        logger.warn('Project navigation blocked by app state', { app: st.app, url: page.url() });
+        return false;
+      }
+    } catch { /* fall through to shell wait */ }
     return await waitForProjectShell(page);
   } catch (e) {
     logger.warn('Project navigation failed', { label, error: e.message });
@@ -609,55 +717,159 @@ function touchProject(urlProjectId) {
  * Returns true if navigation succeeded, false otherwise.
  */
 export async function navigateToSidebar(page, section) {
-  logger.info('Navigating to sidebar section', { section });
-  const { escapeRegExp } = await import('../utils/sanitize.js');
-  const exact = new RegExp(`^${escapeRegExp(section)}$`, 'i');
+  const detailed = await navigateSidebarDetailed(page, section);
+  return detailed.ok;
+}
 
-  // Scoped locators first (sidebar/nav), then generic role-based fallback.
-  const scoped = [
-    page.locator('[class*="sidebar"] button, [class*="sidebar"] a').filter({ hasText: exact }).first(),
-    page.locator('nav button, nav a').filter({ hasText: exact }).first(),
-    page.locator('[class*="nav"] button, [class*="nav"] a').filter({ hasText: exact }).first(),
-  ];
-  for (const el of scoped) {
-    try {
-      if (await el.isVisible().catch(() => false)) {
-        await el.click();
-        await page.waitForTimeout(1500);
-        // READ BACK: active sidebar section must reflect the target.
-        const active = await getActiveSidebarSection(page).catch(() => null);
-        if (active && active.toLowerCase().includes(section.toLowerCase())) {
-          logger.info('Sidebar navigation verified', { section, active });
-          return true;
+// Scoped sidebar roots only. There is deliberately NO document-wide generic
+// fallback: a similarly named tile elsewhere in the page (gallery, dialogs)
+// must never be clicked as if it were sidebar navigation.
+const SIDEBAR_SCOPES = [
+  '[class*="sidebar"] button, [class*="sidebar"] a, [class*="sidebar"] mat-list-item, [class*="sidebar"] [role="listitem"]',
+  'nav button, nav a, nav mat-list-item, nav [role="listitem"]',
+  '[class*="nav"] button, [class*="nav"] a, [class*="nav"] mat-list-item',
+];
+
+// Raw selection facts from the live DOM. The evaluate callback returns facts
+// only (no matching logic), so tests exercise the real DOM, not a mock.
+export async function readSidebarEvidence(page) {
+  try {
+    return await page.evaluate(() => {
+      const scopeRoots = Array.from(document.querySelectorAll('[class*="sidebar"], nav'));
+      const roots = scopeRoots.length > 0 ? scopeRoots : [document];
+      let selected = null;
+      for (const root of roots) {
+        const el = root.querySelector('[aria-current="page"], [aria-selected="true"]');
+        if (el) {
+          selected = ((el.textContent || '').trim().slice(0, 120));
+          break;
         }
-        logger.debug('Sidebar click unverified, trying next locator', { section, active });
       }
-    } catch (e) { logger.debug('Sidebar scoped attempt failed', { error: e.message }); }
+      const headingEl = document.querySelector('h1');
+      return {
+        selected,
+        heading: headingEl ? ((headingEl.textContent || '').trim().slice(0, 120)) : null,
+        hash: window.location.hash || null,
+        url: window.location.href,
+        title: document.title || '',
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function pollSidebarEvidence(page, want, budgetMs = 5000) {
+  const deadline = Date.now() + budgetMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readSidebarEvidence(page);
+    if (last && last.selected && normalizeSidebarLabel(last.selected).toLowerCase() === want) return last;
+    await page.waitForTimeout(250).catch(() => {});
+  }
+  return last;
+}
+
+async function readSidebarAppState(page) {
+  try {
+    const title = await page.title().catch(() => '');
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
+    // Structure must come from visible markup (page.content), never from
+    // tag-free bodyText alone.
+    let html = '';
+    try {
+      if (typeof page.content === 'function') html = (await page.content().catch(() => '')) || '';
+    } catch { html = ''; }
+    return classifyAppState({ url: page.url(), title, bodyText, html });
+  } catch {
+    return { allowedUrl: false, app: 'unknown', reason: 'evidence-unreadable' };
+  }
+}
+
+// W02 detailed sidebar navigation for W06 callers: verified section result.
+// Failed nav yields { ok:false, blocker } — callers must block, never report valid.
+//
+// Matching enumerates scoped sidebar candidates and compares NORMALIZED
+// labels exactly (icon ligatures stripped, glued or spaced). Raw-text
+// pre-filtering is what missed the actual `apps_spark_2Tools` anchor.
+// Verification requires the selected item (aria-current/selected) to match
+// plus usable app state — never a classname substring (`inactive` contains
+// `active`) and never a document-generic tile click.
+export async function navigateSidebarDetailed(page, section, opts = {}) {
+  logger.info('Navigating to sidebar section', { section });
+  const want = String(section || '').trim().toLowerCase();
+  if (!want) return { ok: false, active: null, blocker: 'sidebar-nav-blocked: empty section' };
+  const lease = getUiLease();
+  const epoch = opts.epoch ?? lease.getEpoch();
+
+  for (const sel of SIDEBAR_SCOPES) {
+    let handles = [];
+    try {
+      handles = await page.locator(sel).all();
+    } catch (e) {
+      logger.debug('Sidebar scope enumeration failed', { selector: sel, error: e.message });
+      continue;
+    }
+    for (const handle of handles) {
+      let raw = '';
+      try {
+        raw = (await handle.textContent()) || '';
+      } catch { continue; }
+      if (normalizeSidebarLabel(raw).toLowerCase() !== want) continue;
+      let visible = false;
+      try {
+        visible = await handle.isVisible().catch(() => false);
+      } catch { continue; }
+      if (!visible) continue;
+      // Lease checkpoint immediately before the consequential click.
+      if (!lease.checkpoint(epoch)) {
+        return { ok: false, active: null, blocker: 'sidebar-nav-blocked: ui lease stale before click' };
+      }
+      try {
+        await handle.click();
+      } catch (e) {
+        logger.debug('Sidebar click failed', { section, error: e.message });
+        continue;
+      }
+      // Bounded semantic wait for selection evidence (not a fixed sleep).
+      const evidence = await pollSidebarEvidence(page, want, opts.pollMs ?? 5000);
+      // Re-check the lease before trusting the read-back.
+      if (!lease.checkpoint(epoch)) {
+        return { ok: false, active: null, blocker: 'sidebar-nav-blocked: ui lease stale before read-back' };
+      }
+      const selected = evidence?.selected ? normalizeSidebarLabel(evidence.selected) : null;
+      const selectedMatch = !!selected && selected.toLowerCase() === want;
+      const app = await readSidebarAppState(page);
+      if (selectedMatch && app.app === 'ready') {
+        logger.info('Sidebar navigation verified', { section, active: selected, route: evidence?.hash || evidence?.url });
+        return { ok: true, active: selected, route: evidence?.hash || evidence?.url, heading: evidence?.heading || null, blocker: null };
+      }
+      logger.debug('Sidebar click unverified', { section, selected, app: app.app });
+      return {
+        ok: false,
+        active: selected,
+        blocker: `sidebar-nav-blocked: section "${section}" click unverified (selected=${selected || 'none'}, app=${app.app})`,
+      };
+    }
   }
 
-  const generic = page.locator('button, a').filter({ hasText: exact }).first();
-  try {
-    if (await generic.isVisible().catch(() => false)) {
-      await generic.click();
-      await page.waitForTimeout(1500);
-      const active = await getActiveSidebarSection(page).catch(() => null);
-      if (active && active.toLowerCase().includes(section.toLowerCase())) {
-        logger.info('Sidebar navigation verified via generic locator', { section, active });
-        return true;
-      }
-      logger.debug('Sidebar generic click unverified', { section, active });
-    }
-  } catch (e) { logger.debug('Sidebar generic attempt failed', { error: e.message }); }
-
-  // Fallback: detect all buttons and log them
+  // Scoped diagnostics only; they must never throw away the blocker.
   logger.warn('Sidebar section not found via selectors', { section });
-  const elements = await detectPageElements(page);
-  await takeScreenshot(page, `sidebar-${section}-not-found`);
-  logger.info('Available buttons on page', {
-    buttons: elements.buttons.map(b => b.text).filter(Boolean),
-  });
+  try {
+    const elements = await detectPageElements();
+    logger.info('Available buttons on page', {
+      buttons: (elements?.buttons || []).map(b => b.text).filter(Boolean),
+    });
+  } catch (e) {
+    logger.debug('Sidebar diagnostics unavailable', { error: e.message });
+  }
+  try {
+    await takeScreenshot(page, `sidebar-${section}-not-found`);
+  } catch (e) {
+    logger.debug('Sidebar failure screenshot unavailable', { error: e.message });
+  }
 
-  return false;
+  return { ok: false, active: null, blocker: `sidebar-nav-blocked: section "${section}" not found or not verified` };
 }
 
 /**
@@ -667,15 +879,36 @@ export async function navigateToSidebar(page, section) {
 export async function getActiveSidebarSection(page) {
   try {
     const section = await page.evaluate(() => {
-      const active = document.querySelector(
-        '[class*="sidebar"] [class*="active"], [class*="sidebar"] [aria-current="page"], nav [class*="active"]'
-      );
-      if (active) {
-        return (active.textContent || '').trim();
+      // Authoritative selection evidence first: aria-current/aria-selected.
+      // Class matching uses whole class tokens (`inactive` must NOT match).
+      const byAria = (root) => {
+        const el = root.querySelector('[aria-current="page"], [aria-selected="true"]');
+        return el ? (el.textContent || '').trim() : null;
+      };
+      const byToken = (root) => {
+        const els = root.querySelectorAll('[class]');
+        for (const el of els) {
+          try {
+            const cls = el.classList;
+            if (cls && (cls.contains('active') || cls.contains('selected') || cls.contains('current'))) {
+              return (el.textContent || '').trim();
+            }
+          } catch { /* ignore */ }
+        }
+        return null;
+      };
+      const scopes = Array.from(document.querySelectorAll('[class*="sidebar"], nav'));
+      for (const scope of scopes) {
+        const hit = byAria(scope) || byToken(scope);
+        if (hit) return hit;
       }
-      return null;
+      // Document-level aria fallback only — never a class-substring scan.
+      return byAria(document);
     });
-    return section;
+    if (!section) return null;
+    try {
+      return normalizeSidebarLabel(section);
+    } catch { return String(section).trim(); }
   } catch {
     return null;
   }

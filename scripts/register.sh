@@ -20,6 +20,21 @@ die()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] ERROR $*" >&2; exit 1; }
 
 command -v node >/dev/null 2>&1 || die "Node.js is required but was not found in PATH."
 
+usage() {
+  echo "register.sh [--opencode] [--gemini] [--dry-run] [--help]"
+  echo "Safe modes: --help prints this text; --dry-run prints the planned"
+  echo "server entry and target clients without modifying any config."
+}
+
+# --- Safe modes BEFORE any side effect (no config writes below this point) ---
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --dry-run) DRY_RUN=1 ;;
+  esac
+done
+
 # --- Parse Arguments ---
 OPT_OPENCODE=0
 OPT_GEMINI=0
@@ -32,12 +47,20 @@ else
     case "$arg" in
       --opencode) OPT_OPENCODE=1 ;;
       --gemini)   OPT_GEMINI=1 ;;
+      --dry-run|--help|-h) ;; # handled by the safe-mode block above
       *) warn "Unknown argument: $arg" ;;
     esac
   done
 fi
 
 SUCCESS_COUNT=0
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  log "--dry-run: would register server entry $SERVER_ENTRY (no configs modified)."
+  [[ $OPT_OPENCODE -eq 1 ]] && log "--dry-run: would inspect OpenCode config candidates (no writes, no backups)."
+  [[ $OPT_GEMINI -eq 1 ]] && log "--dry-run: would inspect Gemini CLI registration (no changes)."
+  exit 0
+fi
 
 # --- OpenCode Registration ---
 if [[ $OPT_OPENCODE -eq 1 ]]; then

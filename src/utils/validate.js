@@ -29,6 +29,10 @@ export const schemas = {
     open_flow: z.boolean().optional().default(true),
   }).passthrough(),
 
+  flow_status: z.object({
+    full: z.boolean().optional().default(false),
+  }).passthrough(),
+
   flow_discover_ui: z.object({
     page: z.string().trim().min(1).max(64).optional().default('main'),
     project_name: z.string().trim().max(200).optional(),

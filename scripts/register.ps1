@@ -15,7 +15,9 @@
 
 param(
     [switch]$OpenCode,
-    [switch]$Gemini
+    [switch]$Gemini,
+    [switch]$DryRun,
+    [switch]$Help
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +44,20 @@ function Write-Err {
     Write-Host "[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] ERROR $Message" -ForegroundColor Red
 }
 
+# Safe modes BEFORE any side effect (no config writes, no backups below).
+if ($Help) {
+    Write-Host 'register.ps1 [-OpenCode] [-Gemini] [-DryRun] [-Help]'
+    Write-Host 'Safe modes: -Help prints this text; -DryRun/--dry-run prints the planned server entry and target clients without modifying any config.'
+    exit 0
+}
+foreach ($a in $args) {
+    if ($a -eq '--help' -or $a -eq '-h') {
+        Write-Host 'register.ps1 [-OpenCode] [-Gemini] [-DryRun] [-Help]'
+        exit 0
+    }
+    if ($a -eq '--dry-run') { $DryRun = $true }
+}
+
 # If no flags specified, default to all
 if (-not $OpenCode -and -not $Gemini) {
     $OpenCode = $true
@@ -49,6 +65,13 @@ if (-not $OpenCode -and -not $Gemini) {
 }
 
 $successCount = 0
+
+if ($DryRun) {
+    Write-Log "--dry-run: would register server entry $ServerEntry (no configs modified)."
+    if ($OpenCode) { Write-Log '--dry-run: would inspect OpenCode config candidates (no writes, no backups).' }
+    if ($Gemini) { Write-Log '--dry-run: would inspect Gemini CLI registration (no changes).' }
+    exit 0
+}
 
 # --- OpenCode Registration ---
 if ($OpenCode) {

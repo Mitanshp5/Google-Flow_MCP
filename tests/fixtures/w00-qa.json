@@ -1,0 +1,1 @@
+{"fixtures":["w00-404.html","w00-changelog.html","w00-composer-video.html","w00-sidebar.html"],"note":"Sanitized semantic fixtures only: element semantics observed in QA, no account data, no credentials, no network targets.","qa_revision":"6d56c2467df7922d4766c74a1d81626d65232cce","slice":"w00-import-dispatch"}

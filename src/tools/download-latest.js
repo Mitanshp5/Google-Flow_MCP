@@ -4,6 +4,8 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { getOutputDir } from '../utils/file-manager.js';
 import { jobQueue } from '../queue/job-queue.js';
+import { selectNewestEligible, verifyDownloadedBytes, classifyDownloadError } from '../assets/catalog.js';
+import fs from 'fs';
 import path from 'path';
 
 // Extension sets from the P0-3 plan (.mp4/.webm → video; .png/.jpg/.webp
@@ -27,39 +29,211 @@ export function resolveDownloadKind({ suggestedFilename = '', jobType = null } =
   return { kind: 'other', detectedFrom: 'fallback' };
 }
 
-export async function handleDownloadLatest() {
-  const page = getPage();
+// W04: actual asset menu format (Google documented flow): hover/select the
+// asset → More options → Download. First-download-control alone never proves
+// newest identity.
+export const ASSET_MENU_STEPS = ['hover/select asset', 'More options', 'Download'];
+
+// W04: explicit asset mapping (pure helper, supplementary). The browser flow
+// below never treats caller-supplied candidates as observed truth — it
+// enumerates the live DOM (enumerateAssetTiles) instead.
+export function selectExplicitDownloadTarget({ explicitAssetId = null, candidates = [], projectId = null, kind = null } = {}) {
+  if (explicitAssetId) {
+    const hit = (candidates || []).find((a) => (a.id || a.assetId) === explicitAssetId);
+    if (!hit) return { status: 'not_found', reason: `explicit asset "${explicitAssetId}" not in candidates`, choices: [] };
+    return { status: 'selected', asset: hit, selection: 'explicit' };
+  }
+  const r = selectNewestEligible(candidates, { projectId, kind });
+  if (r.status === 'selected') return { ...r, selection: 'newest-eligible' };
+  return { ...r, selection: r.status === 'ambiguous' ? 'blocked-ambiguous' : 'none' };
+}
+
+// W04: verify actual saved bytes — signature + size + hash. Complete, not
+// filename alone. Never fabricates an asset identity on failure.
+export function verifySavedDownload({ bytes, expectedKind = null, savedPath = '' } = {}) {
+  const v = verifyDownloadedBytes({ bytes, expectedKind });
+  return { verified: v.ok, hash: v.hash ?? null, size: v.size ?? 0, mime: v.mime ?? null, reason: v.reason, path: savedPath };
+}
+
+export { classifyDownloadError };
+
+// Enumerate actually visible asset tiles with stable identities from the
+// live DOM — the ONLY source of truth for newest selection. Caller-supplied
+// candidate lists are never consulted here.
+export async function enumerateAssetTiles(page) {
+  try {
+    const tiles = await page.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('[data-asset-id]')) {
+        const tile = el.closest('.asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
+        const assetId = el.getAttribute('data-asset-id') || el.getAttribute('data-media-id');
+        if (!assetId) continue;
+        const title = el.getAttribute('data-title') || tile.getAttribute?.('data-title') || (tile.textContent || '').trim().slice(0, 120);
+        const kind = el.getAttribute('data-kind') || tile.getAttribute?.('data-kind') || null;
+        const projectId = el.getAttribute('data-project') || tile.getAttribute?.('data-project') || null;
+        const account = el.getAttribute('data-account') || tile.getAttribute?.('data-account') || null;
+        const createdRaw = el.getAttribute('data-created-at') || tile.getAttribute?.('data-created-at')
+          || el.getAttribute('data-timestamp') || tile.getAttribute?.('data-timestamp');
+        const createdAtMs = createdRaw != null && createdRaw !== '' && Number.isFinite(Number(createdRaw))
+          ? Number(createdRaw)
+          : undefined;
+        const rect = tile.getBoundingClientRect?.();
+        const visible = rect ? rect.width > 0 && rect.height > 0 : true;
+        out.push({ id: assetId, assetId, title, kind, projectId, account, createdAtMs, visible });
+      }
+      // De-dupe by asset id, keep first.
+      const seen = new Map();
+      for (const t of out) {
+        if (!seen.has(t.assetId)) seen.set(t.assetId, t);
+      }
+      return [...seen.values()].filter((t) => t.visible !== false);
+    }).catch(() => []);
+    return Array.isArray(tiles) ? tiles : [];
+  } catch {
+    return [];
+  }
+}
+
+function tileLocator(page, assetId) {
+  return page.locator(`.asset-tile[data-asset-id="${assetId}"], [data-asset-id="${assetId}"]`).first();
+}
+
+// Target the verified tile: hover/select → More options → Download, with the
+// download event pre-registered BEFORE the Download click (same race as the
+// filechooser: awaiting after the click loses the event).
+async function exposeAndDownloadTile(page, asset) {
+  const id = asset.assetId || asset.id;
+  const tile = tileLocator(page, id);
+  try {
+    await tile.hover({ timeout: 3000 }).catch(() => {});
+  } catch { /* hover best-effort */ }
+  const more = tile.locator('button:has-text("More options"), [aria-label*="More" i], .more').first();
+  if (await more.isVisible().catch(() => false)) {
+    await more.click().catch(() => {});
+    await page.waitForTimeout(400);
+  }
+  // Scope the Download click to the tile/menu — never a page-wide first
+  // download control belonging to another asset.
+  let dlBtn = tile.locator('button:has-text("Download"), [aria-label*="download" i], .dl').first();
+  if (!(await dlBtn.isVisible().catch(() => false))) {
+    const menuDl = page.locator('.menu:visible button:has-text("Download"), [role="menu"]:visible button:has-text("Download")').first();
+    if (await menuDl.isVisible().catch(() => false)) dlBtn = menuDl;
+  }
+  if (!(await dlBtn.isVisible().catch(() => false))) {
+    return { download: null, error: `Download affordance not exposed for asset "${id}" (hover→More→Download)` };
+  }
+  const downloadPromise = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+  await dlBtn.click().catch(() => {});
+  const download = await downloadPromise;
+  if (!download) return { download: null, error: `no download event for asset "${id}"` };
+  return { download };
+}
+
+export async function handleDownloadWithPage(page, args = {}, deps = {}) {
+  const shotFn = deps.takeScreenshotFn || takeScreenshot;
+  const outDirFn = deps.getOutputDirFn || getOutputDir;
   logger.info('Attempting to download latest result');
 
   try {
-    const downloadBtnLocator = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
-    const downloadBtnVisible = await downloadBtnLocator.isVisible().catch(() => false);
-    if (!downloadBtnVisible) {
-      await takeScreenshot(page, 'download-btn-not-found');
-      return { status: 'not_found', message: 'No download button found on current page' };
+    // 1. Enumerate live DOM identities FIRST — mapping before any click.
+    const tiles = await enumerateAssetTiles(page);
+    const explicitId = args.assetId ?? args.asset_id ?? null;
+
+    if (tiles.length === 0) {
+      // Honest conditional path: the already-open-menu working state (QA
+      // single-client retest) with no enumerable tiles. Download the visible
+      // context WITHOUT claiming latest identity.
+      const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
+      if (!(await openDl.isVisible().catch(() => false))) {
+        await shotFn(page, 'download-btn-not-found').catch(() => null);
+        return { status: 'not_found', message: 'No download button found on current page' };
+      }
+      const dp = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+      await openDl.click().catch(() => {});
+      const download = await dp;
+      if (!download) {
+        await shotFn(page, 'download-no-event').catch(() => null);
+        return { status: 'download_initiated', message: 'Download button clicked, but no download event was observed. Check the project page.' };
+      }
+      const suggested = download.suggestedFilename() || `flow-download-${Date.now()}`;
+      const jobType = jobQueue.getCurrentJob()?.type ?? jobQueue.getStatus(1).history[0]?.type ?? null;
+      const { kind, detectedFrom } = resolveDownloadKind({ suggestedFilename: suggested, jobType });
+      const dir = outDirFn(kind);
+      const safe = suggested.replace(/[/\\?%*:|"<>]/g, '-').slice(0, 120);
+      const savePath = path.join(dir, `${Date.now()}_${safe}`);
+      await download.saveAs(savePath);
+      let verification;
+      try {
+        verification = verifySavedDownload({ bytes: fs.readFileSync(savePath), expectedKind: kind === 'other' ? null : kind, savedPath: savePath });
+      } catch (e) {
+        verification = { verified: false, reason: `saved file unreadable: ${e.message}`, hash: null, size: 0, mime: null, path: savePath };
+      }
+      if (!verification.verified) {
+        return { status: 'download_unverified', message: `Download saved but byte verification failed: ${verification.reason}.`, path: savePath, kind, detectedFrom, verification, latest_verified: false, asset: null };
+      }
+      return { status: 'downloaded', message: 'Download saved from the currently open menu (latest NOT verified — no enumerable asset identity).', path: savePath, kind, detectedFrom, verification, latest_verified: false, asset: null };
     }
 
-    const downloadPromise = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
-    await downloadBtnLocator.click();
-    const download = await downloadPromise;
-    if (!download) {
-      // No download event (e.g. opens preview instead) — report honestly.
-      await takeScreenshot(page, 'download-no-event');
-      return { status: 'download_initiated', message: 'Download button clicked, but no download event was observed. Check the project page.' };
+    // 2. Choose the verified newest eligible (or explicit id within the DOM).
+    let chosen = null;
+    if (explicitId) {
+      chosen = tiles.find((t) => (t.assetId || t.id) === explicitId) || null;
+      if (!chosen) {
+        await shotFn(page, 'download-explicit-not-found').catch(() => null);
+        return { status: 'not_found', reason: `explicit asset "${explicitId}" not present in the live library`, choices: tiles.map((t) => t.assetId) };
+      }
+    } else {
+      // Newest eligible scoped to a single project/kind where observable;
+      // mixed scopes without a filter block as ambiguous.
+      const projects = [...new Set(tiles.map((t) => t.projectId).filter(Boolean))];
+      const scopeProject = projects.length === 1 ? projects[0] : null;
+      const kinds = [...new Set(tiles.map((t) => t.kind).filter(Boolean))];
+      const scopeKind = kinds.length === 1 ? kinds[0] : null;
+      const mapped = selectNewestEligible(tiles, { projectId: scopeProject, kind: scopeKind });
+      if (mapped.status !== 'selected') {
+        await shotFn(page, 'download-ambiguous-latest').catch(() => null);
+        return {
+          status: mapped.status === 'ambiguous' ? 'ambiguous' : 'not_found',
+          reason: mapped.reason || 'no eligible asset mapping',
+          choices: (mapped.choices || []).map((c) => c.assetId || c.id),
+          message: 'Download blocked: no unambiguous latest asset identity.',
+        };
+      }
+      chosen = mapped.asset;
     }
-    const suggested = download.suggestedFilename() || `flow-download-${Date.now()}`;
-    // P0-3: route by actual filename/job type instead of hardcoded images/.
-    const jobType = jobQueue.getCurrentJob()?.type
-      ?? jobQueue.getStatus(1).history[0]?.type
-      ?? null;
+
+    // 3. Mapping validated BEFORE the click — now target its real menu.
+    const { download, error } = await exposeAndDownloadTile(page, chosen);
+    if (!download) {
+      await shotFn(page, 'download-no-event').catch(() => null);
+      return { status: 'download_initiated', message: error || 'Download menu did not produce a download event.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
+    }
+    const suggested = download.suggestedFilename() || chosen.title || `flow-download-${Date.now()}`;
+    const jobType = jobQueue.getCurrentJob()?.type ?? jobQueue.getStatus(1).history[0]?.type ?? null;
     const { kind, detectedFrom } = resolveDownloadKind({ suggestedFilename: suggested, jobType });
-    const dir = getOutputDir(kind);
-    const safe = suggested.replace(/[/\\?%*:|"<>]/g, '-').slice(0, 120);
+    const dir = outDirFn(kind);
+    const safe = String(suggested).replace(/[/\\?%*:|"<>]/g, '-').slice(0, 120);
     const savePath = path.join(dir, `${Date.now()}_${safe}`);
     await download.saveAs(savePath);
-    logger.info('Download saved', { path: savePath, kind, detectedFrom });
-    return { status: 'downloaded', message: 'Download saved.', path: savePath, kind, detectedFrom };
+    let verification;
+    try {
+      verification = verifySavedDownload({ bytes: fs.readFileSync(savePath), expectedKind: kind === 'other' ? null : kind, savedPath: savePath });
+    } catch (e) {
+      verification = { verified: false, reason: `saved file unreadable: ${e.message}`, hash: null, size: 0, mime: null, path: savePath };
+    }
+    logger.info('Download saved', { path: savePath, kind, detectedFrom, verified: verification.verified, hash: verification.hash, asset: chosen.assetId });
+    if (!verification.verified) {
+      return { status: 'download_unverified', message: `Download saved but byte verification failed: ${verification.reason}.`, path: savePath, kind, detectedFrom, verification, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
+    }
+    return { status: 'downloaded', message: 'Download saved.', path: savePath, kind, detectedFrom, verification, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
-    throw new FlowError(ErrorCodes.DOWNLOAD_FAILED, `Download failed: ${err.message}`);
+    // Signed-URL expiry / incomplete / failure — no fabricated identity.
+    const classified = classifyDownloadError(err);
+    throw new FlowError(ErrorCodes.DOWNLOAD_FAILED, `Download failed (${classified.code}): ${classified.message}`, { code: classified.code, retryable: classified.retryable });
   }
+}
+
+export async function handleDownloadLatest(args = {}) {
+  const page = getPage();
+  return handleDownloadWithPage(page, args);
 }

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<!-- W00 sanitized semantic fixture for F03/F04.
+     Ordinary project video composer (NOT a character/scene form): a generic
+     contenteditable composer plus a settings chip reading
+     "Video · 720p · 8s". Requested values in repro tests (4s/360p) differ
+     from this actual chip on purpose. No account data. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>W00 composer fixture</title></head>
+<body>
+<main id="project-home">
+  <div data-testid="prompt-composer">
+    <div contenteditable="true" aria-label="Video prompt">A quiet workshop, morning light</div>
+    <span data-testid="mode-chip">Video · 720p · 8s</span>
+  </div>
+</main>
+</body>
+</html>

@@ -10,8 +10,15 @@ import { insertMentionReferences, collectMentionNames } from '../navigation/ment
 import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { getSelectors } from '../utils/selectors.js';
-import { get } from '../utils/config.js';
+import { get, getFlowHome } from '../utils/config.js';
 import { resolveModel, getUniverse, resolveIngredientsDuration } from '../utils/models.js';
+import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js';
+import { createOperationStore } from '../domain/operations.js';
+import { extractProjectId } from '../navigation/project-navigator.js';
+import { extractObservedAccount } from '../browser/app-state.js';
+import { parseCostLabel } from '../browser/cost-quote.js';
+import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -47,37 +54,6 @@ function resolveFrame(p, label) {
   return abs;
 }
 
-/**
- * Select the requested video model by clicking the model CHIP in the prompt
- * bar (e.g. "🍌 Nano Banana 2 … x2"), picking the model from the picker, then
- * READ BACK the chip. Returns true only when the UI confirms the model.
- * Never throws for panel absence — returns false so the caller refuses the
- * paid click with a manual-setup message.
- */
-async function selectModelViaTune(page, model) {
-  const want = String(model).toLowerCase();
-  // Fast path: chip already shows the model.
-  const before = await readToolState(page).catch(() => null);
-  if (before?.model && (before.model.toLowerCase() === want || before.model.toLowerCase().includes(want.split(' ')[0]))) {
-    logger.info('Model already showing in UI chip', { model, chip: before.modelChip });
-    return true;
-  }
-  // Video models need video mode first (settings panel behind the bar chip).
-  if (before && before.mode === 'image') {
-    const modeRes = await setPromptBarMode(page, 'Video').catch(() => null);
-    logger.info('Video-mode switch result', { modeRes });
-    await takeScreenshot(page, 'video-mode-switched');
-  }
-  // Pick the model in the same settings panel. setPromptBarModel verifies
-  // via the settings ROW (the bar chip carries no model name in video
-  // mode) — trust that result directly.
-  const res = await setPromptBarModel(page, model).catch(() => null);
-  logger.info('Model picker result', { res });
-  const ok = !!res?.ok;
-  if (ok) logger.info('Model selection verified via settings row', { model, detail: res.detail });
-  else logger.warn('Model selection unverified after settings-panel attempt', { model, res });
-  return ok;
-}
 
 export async function handleGenerateVideo(args) {
   if (!args || typeof args.prompt !== 'string' || !args.prompt.trim()) {
@@ -134,6 +110,9 @@ export async function handleGenerateVideo(args) {
   try {
     jobQueue.startJob(job.id);
     const page = getPage();
+
+    return await withUiTransaction(async ({ epoch }) => {
+    assertUiCurrent(epoch);
 
     // Ensure we're in a project context
     await ensureProjectInContext(page, {
@@ -282,6 +261,35 @@ export async function handleGenerateVideo(args) {
       logger.warn('Generation UI settings unverified — continuing prepare-only', { failures: uiSkipped });
     }
 
+    // F04: Read back tool settings from UI and verify requested vs actual
+    const postToolState = await readToolState(page).catch(() => null);
+    const settingsVerification = {
+      requested: { duration: effectiveDuration, quality: wantQuality, ratio, quantity: qty },
+      actual: {
+        duration: postToolState?.duration || null,
+        quality: postToolState?.quality || null,
+        ratio: postToolState?.ratio || null,
+        quantity: postToolState?.quantity || null,
+      },
+      verified: true,
+    };
+    if (postToolState?.duration !== effectiveDuration) {
+      settingsVerification.verified = false;
+      warnings.push(`Duration read-back mismatch: requested ${effectiveDuration}, UI shows ${postToolState?.duration || 'none'}`);
+    }
+    if (wantQuality && postToolState?.quality !== wantQuality.toLowerCase()) {
+      settingsVerification.verified = false;
+      warnings.push(`Quality read-back mismatch: requested ${wantQuality}, UI shows ${postToolState?.quality || 'none'}`);
+    }
+    if (postToolState?.ratio !== ratio) {
+      settingsVerification.verified = false;
+      warnings.push(`Ratio read-back mismatch: requested ${ratio}, UI shows ${postToolState?.ratio || 'none'}`);
+    }
+    if (postToolState?.quantity !== qty) {
+      settingsVerification.verified = false;
+      warnings.push(`Quantity read-back mismatch: requested ${qty}, UI shows ${postToolState?.quantity || 'none'}`);
+    }
+
     // Fill prompt (scaffolded) + READ BACK to verify it actually landed.
     await promptInput.click();
     await promptInput.fill('');
@@ -290,12 +298,13 @@ export async function handleGenerateVideo(args) {
     await page.waitForTimeout(500);
     const filledText = await promptInput.textContent().catch(() => '')
       || await promptInput.inputValue().catch(() => '');
-    const promptHead = args.prompt.trim().slice(0, 40);
-    if (!filledText || !filledText.includes(promptHead)) {
+    const normalizedExpected = prompt.replace(/\s+/g, ' ').trim();
+    const normalizedActual = String(filledText).replace(/\s+/g, ' ').trim();
+    if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
         'Prompt fill could not be verified in the input (read-back mismatch). Refusing to continue with wrong/empty prompt.',
-        { expectedHead: promptHead, actualHead: String(filledText).slice(0, 80) });
+        { expected: prompt, actual: String(filledText) });
     }
     logger.info('Prompt fill verified via read-back', { chars: filledText.length });
 
@@ -377,88 +386,94 @@ export async function handleGenerateVideo(args) {
     // 2. model selected via tune panel + read back, or already showing
     // 3. prompt read-back already passed above
     if (args.confirm_generate === true) {
-      const modelVerified = await selectModelViaTune(page, model);
-      const postState = await readToolState(page);
-      await takeScreenshot(page, 'pre-generate-verification');
-      // Verify via settings-row result (row-verified) + video mode.
-      // The bar chip carries NO model name in video mode
-      // ("Video · 720p · 8s ▢ x1"), so a chip check can't apply here.
-      const chipHit = postState.model &&
-        (postState.model.toLowerCase() === model.toLowerCase() ||
-          postState.model.toLowerCase().includes(model.split(' ')[0].toLowerCase()));
-      const modeOk = postState.mode === 'video';
-      if (!modelVerified || (!chipHit && !modeOk)) {
-        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
-          `Refusing live Generate: model "${model}" not verified in UI ` +
-          `(tuneSelect=${modelVerified}, chip=${postState.modelChip || 'none'}). ` +
-          `Pick it via the tune icon first, then retry. No credits spent.`,
-          { model, tuneSelect: modelVerified, toolState: postState });
+      assertUiCurrent(epoch);
+
+      const pageHtml = await page.content().catch(() => '');
+      let observedAccount = extractObservedAccount(pageHtml);
+      if (!observedAccount && !pageHtml) {
+        try {
+          const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
+          observedAccount = extractObservedAccount(fallbackHtml);
+        } catch { /* ignore */ }
       }
-      logger.info('Model verified for live Generate', { model, chip: postState.modelChip });
-      // P0-2: fail closed — never spend credits when requested frames never landed.
-      if (frameFiles.length > 0 && !attachVerified) {
-        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
-          `Refusing live Generate: ${frameFiles.length} requested frame/reference file(s) did not land in the composer ` +
-          `(input accepted ${attachAccepted}/${frameFiles.length}). Attach them manually via Video Frames/Ingredients, then retry. No credits spent.`,
-          { frame_verification: frameVerification });
+
+      const currentUrl = page.url() || '';
+      const observedProjectId = extractProjectId(currentUrl);
+      const verifiedSettings = settingsVerification?.verified ? settingsVerification.actual : null;
+
+      const baselineIds = await page.evaluate(() => {
+        const vids = Array.from(document.querySelectorAll('video'));
+        const ids = [];
+        vids.forEach(v => {
+          const src = v.currentSrc || v.src || '';
+          if (src) ids.push(src);
+        });
+        const imgs = Array.from(document.querySelectorAll('img'));
+        imgs.forEach(i => {
+          const src = i.src || '';
+          const match = src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
+          if (match) ids.push(match[1]);
+        });
+        return [...new Set(ids)];
+      }).catch(() => []);
+      const baseline = { ids: baselineIds, observedAt: Date.now() };
+
+      const costText = await page.evaluate(() => {
+        const els = Array.from(document.querySelectorAll('*'));
+        for (const el of els) {
+          const text = (el.innerText || el.textContent || '').trim();
+          if (/generating will use \d+ credits|\d+\s*credits?/i.test(text) && text.length < 60) {
+            return text;
+          }
+        }
+        return null;
+      }).catch(() => null);
+
+      let quote = null;
+      if (costText) {
+        const parsed = parseCostLabel(costText, { quantity: qty });
+        if (parsed.state === 'known') {
+          quote = {
+            total: parsed.totalUpperBound,
+            unit: parsed.unit,
+            quantity: parsed.quantity,
+            raw: parsed.raw,
+            observedAt: Date.now(),
+          };
+        }
       }
-      logger.info('⚠️⚠️⚠️ Clicking Generate — credits will be consumed', { model });
-      const submitBtn = page.locator(
-        'button[aria-label*="Start generation" i], button[aria-label*="Send" i], button[aria-label*="Generate" i], button[type="submit"]'
-      ).first();
-      if (!(await submitBtn.isVisible().catch(() => false))) {
-        await takeScreenshot(page, 'no-generate-btn-live');
-        throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button not visible — no credits spent.');
-      }
-      if (await submitBtn.isDisabled().catch(() => false)) {
-        await takeScreenshot(page, 'generate-disabled-live');
-        throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button is disabled — no credits spent.');
-      }
-      await submitBtn.click();
-      const pollTimeoutMs = get('generationTimeoutMs', 120000);
-      const pollCeilingMs = resolveVideoPollCeilingMs({
-        generationTimeoutMs: pollTimeoutMs,
-        jobTimeoutMs: get('jobTimeoutMs', 300000),
-      });
-      logger.info('Generate clicked — polling for video output', { ceilingSec: Math.round(pollCeilingMs / 1000) });
-      const pollStart = Date.now();
-      let videoFound = null;
-      while (Date.now() - pollStart < pollCeilingMs) {
-        await page.waitForTimeout(5000);
-        videoFound = await page.evaluate(() => {
-          const vids = Array.from(document.querySelectorAll('video'));
-          const ready = vids.find(v => (v.currentSrc || v.src || '').startsWith('http'));
-          if (ready) return { src: ready.currentSrc || ready.src };
-          const imgs = Array.from(document.querySelectorAll('img'));
-          const gen = imgs.map(i => i.src).find(s => s && s.includes('getMediaUrlRedirect'));
-          return gen ? { thumbnail: gen } : null;
-        }).catch(() => null);
-        if (videoFound) break;
-      }
-      const doneShot = await takeScreenshot(page, 'video-live-result');
-      saveMetadata(job.id, {
-        type: 'video', model, ratio, duration: effectiveDuration, quality: args.quality || get('defaultQuality', '720p'), prompt,
-        live: true, credits_consumed: true, result: videoFound,
-        projectUrl: page.url(), jobId: job.id,
-      });
-      jobQueue.completeJob(job.id, {
-        status: videoFound ? 'success' : 'generating',
-        type: 'video',
-        account: get('expectedAccount'),
-        model_used: model,
+
+      const requestPayload = {
+        prompt,
+        model,
         ratio,
         duration: effectiveDuration,
-        quality: args.quality || get('defaultQuality', '720p'),
-        prompt,
-        credits_consumed: true,
-        result: videoFound,
-        project_url: page.url(),
-        message: videoFound
-          ? 'Video generated (live paid click). See result src / project page.'
-          : 'Generate clicked (credits consumed); video still rendering after poll window. Check the project page.',
-        screenshot: doneShot,
+        quality: wantQuality,
+        quantity: qty,
+        type: 'video',
+      };
+      const submissionContext = await buildHandlerSubmissionContext({
+        page,
+        epoch,
+        requestPayload,
+        inputLocator: promptInput,
+        refs: frameFiles,
+        mentionNames,
       });
-      return jobQueue.getJob(job.id).result;
+
+      return await executeDurableSubmission({
+        page,
+        epoch,
+        opStore: createOperationStore(getFlowHome()),
+        requestPayload,
+        observedAccount,
+        observedProjectId,
+        verifiedSettings,
+        refs: frameFiles,
+        baseline,
+        quote,
+        ...submissionContext,
+      });
     }
 
     const qc = {
@@ -492,12 +507,12 @@ export async function handleGenerateVideo(args) {
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
       qc,
-      status: 'ready_for_confirmation',
+      status: settingsVerification.verified ? 'ready_for_confirmation' : 'prepared_unverified',
       note: 'Video generation is a paid feature. Manual confirmation required to proceed.',
     });
 
     jobQueue.completeJob(job.id, {
-      status: 'ready_for_confirmation',
+      status: settingsVerification.verified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
       account: get('expectedAccount'),
       model_used: model,
@@ -513,6 +528,11 @@ export async function handleGenerateVideo(args) {
       frames: { start_frame: startFrame, end_frame: endFrame, anchor_frame: anchorFrame },
       frame_verification: frameVerification,
       shots: shotPlan,
+      shots_plan_only: Boolean(shotPlan && shotPlan.length > 0),
+      shots_notice: (shotPlan && shotPlan.length > 0)
+        ? 'Legacy shots[] parameter is plan-only metadata. Individual shot takes are not executed in this handler.'
+        : null,
+      settings_verification: settingsVerification,
       qc_warnings: warnings,
       frame_notes: frameNotes,
       message: 'Video generation setup complete (hero-frame + ingredients + frames QC passed). Manual confirmation required (uses credits).' +
@@ -520,7 +540,9 @@ export async function handleGenerateVideo(args) {
       screenshot: await takeScreenshot(page, 'video-ready'),
     });
 
+    assertUiCurrent(epoch);
     return jobQueue.getJob(job.id).result;
+    }); // end withUiTransaction
   } catch (err) {
     try {
       await takeScreenshot(getPage(), 'generate-video-error');

@@ -3,52 +3,158 @@ import { getPage } from '../browser/connect.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
-import { listMentionOptions } from '../navigation/mentions.js';
+import { listMentionOptionsDetailed } from '../navigation/mentions.js';
+import {
+  readComposerSnapshot,
+  compareComposerSnapshots,
+  isValidRestoreClaim,
+} from '../browser/composer-state.js';
+
+// W04: truthful empty-vs-failed classification. Empty (picker opened, zero
+// rows) is success-empty; failed (picker never opened) is blocked.
+export function classifyMentionListing({ pickerStatus = 'failed', names = [] } = {}) {
+  if (pickerStatus === 'ok' && names.length > 0) {
+    return { toolStatus: 'success', picker: 'ok', message: `Found ${names.length} reference(s) available via @name.` };
+  }
+  if (pickerStatus === 'empty' || (pickerStatus === 'ok' && names.length === 0)) {
+    return { toolStatus: 'success', picker: 'empty', message: 'Picker opened; project has no @ references yet.' };
+  }
+  return { toolStatus: 'blocked', picker: 'failed', message: 'Could not open the @ picker; references unknown (not proven empty).' };
+}
+
+export function hasPreparedState(snap) {
+  if (!snap) return false;
+  if (typeof snap.text === 'string' && snap.text.trim().length > 0) return true;
+  if (Array.isArray(snap.chips) && snap.chips.length > 0) return true;
+  if (snap.slots && Object.keys(snap.slots).length > 0) return true;
+  if (Array.isArray(snap.pendingUploads) && snap.pendingUploads.length > 0) return true;
+  return false;
+}
+
+async function findPromptInput(page) {
+  const cands = [
+    page.locator('[contenteditable="true"]:visible').first(),
+    page.locator('textarea:visible').first(),
+    page.locator('[contenteditable="true"]').first(),
+    page.locator('#prompt').first(),
+  ];
+  for (const c of cands) {
+    try {
+      if (await c.isVisible().catch(() => false)) return c;
+    } catch { /* next */ }
+  }
+  // Fallback for fixture pages where visibility is not computed.
+  for (const c of cands) {
+    try {
+      if ((await c.count().catch(() => 0)) > 0) return c;
+    } catch { /* next */ }
+  }
+  return null;
+}
 
 /**
  * List the names available in Google Flow's "@" reference popup —
  * i.e. the images and characters in the current project that can be
  * used as ingredients via @name in an image/video prompt.
+ * deps injection is test-only; production callers pass args alone.
  */
-export async function handleListMentionOptions(args = {}) {
-  const page = getPage();
+export async function handleListMentionOptions(args = {}, deps = {}) {
+  const page = deps.page || getPage();
+  const ensureFn = deps.ensureProjectFn || ensureProjectInContext;
+  const shotFn = deps.takeScreenshotFn || takeScreenshot;
 
-  await ensureProjectInContext(page, {
+  // 1. Capture the FULL rich snapshot BEFORE any navigation/listing.
+  let preInput = await findPromptInput(page);
+  let before = null;
+  try {
+    if (preInput) before = await readComposerSnapshot(page, preInput);
+  } catch {
+    before = null;
+  }
+  const hadPrepared = hasPreparedState(before);
+
+  // 2. Targeted navigation (may reload and wipe the composer).
+  await ensureFn(page, {
     name: args.project_name,
     campaign: args.campaign,
   });
 
-  // Find a prompt input to open the "@" popup from
-  const promptCandidates = [
-    page.locator('[contenteditable="true"]:visible').first(),
-    page.locator('textarea:visible').first(),
-  ];
-
-  let promptInput = null;
-  for (const candidate of promptCandidates) {
-    if (await candidate.isVisible().catch(() => false)) {
-      promptInput = candidate;
-      break;
-    }
-  }
-
+  // 3. Re-resolve the prompt input after navigation.
+  const promptInput = (await findPromptInput(page)) || preInput;
   if (!promptInput) {
-    await takeScreenshot(page, 'no-prompt-input-for-mentions');
+    await shotFn(page, 'no-prompt-input-for-mentions').catch(() => null);
     throw new FlowError(
       ErrorCodes.UNKNOWN_UI_CHANGE,
       'Could not find a prompt input to open the @ reference popup from.'
     );
   }
 
-  const names = await listMentionOptions(page, promptInput);
-  logger.info('Listed @ mention options', { count: names.length });
+  const detailed = await listMentionOptionsDetailed(page, promptInput);
+  const names = detailed.names;
+  const classified = classifyMentionListing({ pickerStatus: detailed.status, names });
+  logger.info('Listed @ mention options', { count: names.length, picker: detailed.status });
+
+  // 4. Re-read FULL rich state and strictly compare (binding included).
+  // Text-only equality never counts as preserved.
+  let after = null;
+  try {
+    after = await readComposerSnapshot(page, promptInput);
+  } catch {
+    after = null;
+  }
+  let composer = { state: 'unknown' };
+  let richChanged = false;
+  if (before && after) {
+    const cmp = compareComposerSnapshots(before, after);
+    const preserved = isValidRestoreClaim({ before, after, claimedBy: 'restore-verified' });
+    if (preserved) {
+      composer = { state: 'preserved', comparison: cmp };
+    } else {
+      richChanged = true;
+      composer = {
+        state: 'invalidated',
+        reason: 'composer rich state changed during listing',
+        comparison: cmp,
+      };
+    }
+  }
+  // Focus returns to the composer; stray @ residue is already removed by the
+  // picker close path using the exact trigger delta.
+  try {
+    await promptInput.click().catch(() => {});
+  } catch { /* ignore */ }
+
+  if (classified.toolStatus === 'blocked') {
+    return {
+      status: 'blocked',
+      references: [],
+      picker: detailed.status,
+      reason: detailed.reason,
+      message: classified.message,
+      composer,
+      screenshot: await shotFn(page, 'mention-options-failed').catch(() => null),
+    };
+  }
+  // Changed prepared state invalidates even a successful read: no success
+  // with text-only preservation.
+  if (hadPrepared && richChanged) {
+    return {
+      status: 'blocked',
+      references: [],
+      picker: detailed.status,
+      reason: 'composer-prepared-state-lost',
+      message: 'Listing changed prepared composer state; preparation invalidated rather than silently reloaded.',
+      composer,
+      screenshot: await shotFn(page, 'mention-options-invalidated').catch(() => null),
+    };
+  }
 
   return {
     status: 'success',
     references: names,
-    message: names.length > 0
-      ? `Found ${names.length} reference(s) available via @name.`
-      : 'No references found — the @ popup may not have opened, or the project has no images/characters yet.',
-    screenshot: await takeScreenshot(page, 'mention-options'),
+    picker: detailed.status,
+    message: classified.message,
+    composer,
+    screenshot: await shotFn(page, 'mention-options').catch(() => null),
   };
 }

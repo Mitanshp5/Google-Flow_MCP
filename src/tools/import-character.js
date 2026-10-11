@@ -8,6 +8,7 @@ import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { getFlowHome, get } from '../utils/config.js';
 import { resolveSafePath, assertInsideBase } from '../utils/sanitize.js';
 import { ensureProjectInContext, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
+import { isErrorHtml } from '../browser/app-state.js';
 
 /**
  * Import a character from a saved JSON file (args.file_path).
@@ -74,77 +75,84 @@ export async function handleImportCharacter(args) {
 
   logger.info('Importing character from file', { name: characterName, file: absFile });
 
-  // The Characters page only exists scoped to a project
-  // ({flowBase}/project/{id}/characters) — there is
-  // no standalone "/characters" page.
+  // F02: The Character page exists scoped to a project
+  // ({flowBase}/project/{id}/character) — singular route.
   const project = await ensureProjectInContext(page, {
     name: args.project_name,
     campaign: args.campaign,
+    project_url: args.project_url,
   });
   const projectId = extractProjectId(project.url);
-  const charsUrl = projectId
-    ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/characters`
-    : `${project.url.replace(/\/$/, '')}/characters`;
+  const charUrl = projectId
+    ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`
+    : `${project.url.replace(/\/$/, '')}/character`;
 
-  await page.goto(charsUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.goto(charUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(2000);
 
+  const currentUrl = page.url();
+  const title = await page.title().catch(() => '');
+  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
+
+  // F02: Check if route redirected to 404 or error page
+  if (isErrorHtml({ title, bodyText, url: currentUrl })) {
+    return {
+      status: 'blocked',
+      reason: 'page_not_found',
+      url: currentUrl,
+      title,
+      message: 'Character route returned 404 or page not found.',
+      screenshot: await takeScreenshot(page, 'characters-import-404'),
+    };
+  }
+
   const fileInput = await page.$('input[type="file"]');
+  const characterForm = await page.locator('[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]').first().isVisible().catch(() => false);
+  if (!characterForm) {
+    return { status: 'blocked', reason: 'character_form_not_found',
+      message: 'Character import form identity is unverified; no fields were changed.',
+      screenshot: await takeScreenshot(page, 'character-import-unverified') };
+  }
   if (!fileInput) {
     const elements = await detectPageElements();
     return {
       status: 'discovery_needed',
-      message: 'Characters page opened. File input for import not auto-detected.',
+      message: 'Character page opened. File input for import not auto-detected.',
       elements,
       screenshot: await takeScreenshot(page, 'characters-import'),
     };
   }
 
-  if (characterName) {
-    const nameInput = await page.$('input[placeholder*="Name" i], input[aria-label*="Name" i]');
-    if (nameInput) {
-      await nameInput.click();
-      await nameInput.fill('');
-      await page.waitForTimeout(200);
-      await nameInput.type(characterName, { delay: 20 });
+  const unapplied = [];
+  const actual = {};
+  for (const [key, value, selector] of [
+    ['name', characterName, 'input[placeholder*="Name" i], input[aria-label*="Name" i]'],
+    ['description', description, '[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]'],
+  ]) {
+    const input = page.locator(selector).first();
+    if (typeof value !== 'string' || !value.trim() || !await input.isVisible().catch(() => false)) {
+      unapplied.push(key);
+      continue;
     }
+    await input.fill(value);
+    actual[key] = await input.inputValue().catch(() => null)
+      ?? await input.textContent().catch(() => null);
+    if (actual[key] !== value) unapplied.push(key);
   }
-
-  if (referenceImages.length > 0) {
-    const existing = referenceImages.filter(p => {
-      try {
-        if (!fs.existsSync(p)) {
-          logger.warn('Import reference image not found, skipping', { path: p.slice(0, 120) });
-          return false;
-        }
-        return true;
-      } catch { return false; }
-    });
-    if (existing.length > 0) {
-      await fileInput.setInputFiles(existing);
-      await page.waitForTimeout(2000);
-    }
-  }
-
-  if (description) {
-    const descInput = await page.$('textarea, [contenteditable="true"]');
-    if (descInput) {
-      await descInput.click();
-      await descInput.fill('');
-      await page.waitForTimeout(200);
-      await descInput.type(description, { delay: 20 });
-    }
-  }
-
-  await takeScreenshot(page, 'character-import-ready');
-
+  // A generic file input proves neither native character ownership nor the
+  // persisted reference identity. Until that native acknowledgement is observed,
+  // required reference packs remain explicitly unverified rather than skipped.
+  if (referenceImages.length > 0) unapplied.push('reference_images');
   return {
-    status: 'ready_for_confirmation',
-    message: 'Character import setup complete. Manual confirmation needed.',
+    status: unapplied.length ? 'prepared_unverified' : 'ready_for_confirmation',
+    message: unapplied.length ? 'Character import has unverified required fields or references. No submission occurred.'
+      : 'Character fields read back. Manual confirmation is required; no submission occurred.',
     name: characterName,
     description,
     reference_images: referenceImages,
+    actual,
+    unapplied,
     screenshot: await takeScreenshot(page, 'character-import-ready'),
   };
 }

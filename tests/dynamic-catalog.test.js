@@ -4,6 +4,7 @@ import { getFlowHome } from '../src/utils/config.js';
 import { getSelectors, noteSelectors, selectorKeys } from '../src/utils/selectors.js';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 describe('dynamic model universe (nothing frozen)', () => {
   it('resolves aliases + exact names, case-insensitive', () => {
@@ -59,15 +60,22 @@ describe('selector registry (self-healing, not frozen)', () => {
     expect(logic).not.toMatch(/button:has-text\("Nano Banana"\)/);
   });
   it('noteSelectors is callable (map write path)', () => {
-    expect(() => noteSelectors('_test_key', ['.a', '.b'])).not.toThrow();
-    const map = JSON.parse(fs.readFileSync('config/selectors.map.json', 'utf-8'));
-    expect(map._test_key).toContain('.a');
-    delete map._test_key;
-    fs.writeFileSync('config/selectors.map.json', JSON.stringify(map, null, 2));
+    const originalHome = process.env.FLOW_HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dyn-cat-'));
+    process.env.FLOW_HOME = home;
+    try {
+      expect(() => noteSelectors('_test_key', ['.a', '.b'])).not.toThrow();
+      const mapPath = path.join(home, 'config', 'selectors.map.json');
+      const map = JSON.parse(fs.readFileSync(mapPath, 'utf-8'));
+      expect(map._test_key).toContain('.a');
+    } finally {
+      if (originalHome === undefined) delete process.env.FLOW_HOME;
+      else process.env.FLOW_HOME = originalHome;
+    }
   });
 });
 
-describe('P1-2 ingredients duration gate (data-driven, conservative)', () => {
+describe('P1-2 ingredients duration gate REMOVED (parent #2: no model-blind force)', () => {
   it('defaults merge under known entries (no per-model duration claims)', () => {
     expect(DEFAULT_CAPS.ingredientsRequireDuration).toBe('8s');
     for (const m of ['Veo 3.1 - Fast', 'Veo 3.1 - Lite', 'Veo 3.1 - Quality', 'Omni Flash']) {
@@ -81,11 +89,11 @@ describe('P1-2 ingredients duration gate (data-driven, conservative)', () => {
       .toEqual({ duration: '4s', forced: false });
   });
 
-  it('forces 8s for every model today (identical to the old hardcoded check)', () => {
+  it('never forces 8s: caller must block unknown via exact record, not coerce', () => {
     for (const m of ['Veo 3.1 - Fast', 'Veo 3.1 - Lite', 'Veo 3.1 - Quality', 'Omni Flash', 'Future Model X']) {
       expect(resolveIngredientsDuration(capsFor(m), '4s', true))
-        .toEqual({ duration: '8s', forced: true });
-      expect(resolveIngredientsDuration(capsFor(m), '6s', true).forced).toBe(true);
+        .toEqual({ duration: '4s', forced: false });
+      expect(resolveIngredientsDuration(capsFor(m), '6s', true).forced).toBe(false);
     }
   });
 

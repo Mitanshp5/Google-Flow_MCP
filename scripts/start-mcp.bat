@@ -5,7 +5,31 @@ setlocal EnableDelayedExpansion
 :: Requires Chrome to already be running with CDP (start-browser.bat)
 
 set "SCRIPT_DIR=%~dp0"
-set "PROJECT_DIR=%SCRIPT_DIR%.."
+:: Canonicalize (%%~fI) so the entry has no `scripts\..` segment even when
+:: the package path contains spaces.
+for %%I in ("%SCRIPT_DIR%..") do set "PROJECT_DIR=%%~fI"
+
+:: ── resolve the server entry: shipped bundle first, src fallback for dev ──
+:: Both --dry-run and real execution below use this SAME variable, so the
+:: plan always reflects the real target (installed packages have no src/).
+if exist "%PROJECT_DIR%\dist\index.js" (
+    set "SERVER_ENTRY=%PROJECT_DIR%\dist\index.js"
+) else (
+    set "SERVER_ENTRY=%PROJECT_DIR%\src\index.js"
+)
+
+:: ── safe modes BEFORE any side effect (no server start below) ─────────────
+if "%~1"=="--help" goto :help
+if "%~1"=="-h" goto :help
+if "%~1"=="--dry-run" (
+    call :log "INFO" "--dry-run: would run node '%SERVER_ENTRY%' cdpPort=9222 (nothing started)."
+    exit /b 0
+)
+goto :main
+:help
+call :log "INFO" "start-mcp.bat [--dry-run] [--help] — safe modes print this text or the planned server entry without starting anything."
+exit /b 0
+:main
 
 :: ── logging helpers ──────────────────────────────────────────────────────────
 call :log "INFO" "Checking Node.js..."
@@ -24,8 +48,7 @@ if !errorlevel! NEQ 0 (
 )
 
 call :log "INFO" "Starting Google Flow Browser MCP server..."
-cd /d "%PROJECT_DIR%"
-node src/index.js
+node "%SERVER_ENTRY%"
 exit /b %errorlevel%
 
 :: ── helpers ──────────────────────────────────────────────────────────────────

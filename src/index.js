@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -32,6 +33,11 @@ import { schemas, parseOrThrow } from './utils/validate.js';
 import { getUniverse, loadCatalog } from './utils/models.js';
 import { runRetentionSweep } from './utils/file-manager.js';
 import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { withUiTransaction, assertUiCurrent } from './browser/ui-transaction.js';
+import { guardUiPage } from './browser/guarded-page.js';
+import { withPage } from './browser/session-scope.js';
 
 const TOOL_DEFINITIONS = [
   {
@@ -289,13 +295,47 @@ const TOOL_DEFINITIONS = [
   },
 ];
 
+const pendingGeneration = new Set();
 async function handleToolCall(name, args) {
+  // All mutating dispatches share one UI owner; nested handler transactions
+  // join it. Reset stays outside so it can fence an active owner immediately.
+  const ownTransaction = new Set([
+    'flow_connect', 'flow_disconnect', 'flow_discover_ui', 'flow_account_check',
+    'flow_list_models', 'flow_download_latest', 'flow_import_character',
+    'flow_open_characters', 'flow_list_mention_options', 'flow_open_tools_gallery',
+    'flow_use_grid_architect', 'flow_use_tool',
+    'flow_open', 'flow_generate_image', 'flow_generate_video',
+    'flow_create_character', 'flow_create_scene',
+  ]);
+  const generation = ['flow_generate_image', 'flow_generate_video', 'flow_create_character', 'flow_create_scene', 'flow_use_grid_architect'].includes(name);
+  if (generation && pendingGeneration.size) {
+    throw new FlowError('JOB_IN_PROGRESS', 'A generation preparation already owns or is waiting for UI access.');
+  }
+  if (ownTransaction.has(name)) {
+    if (generation) pendingGeneration.add(name);
+    try {
+      return await withUiTransaction(async ({ epoch }) => {
+        assertUiCurrent(epoch);
+        const dispatch = () => dispatchToolCall(name, args, epoch);
+        let page = null;
+        try { page = getPage(); } catch { /* connect may create the first page */ }
+        const result = await (page ? withPage(guardUiPage(page, epoch), dispatch) : dispatch());
+        assertUiCurrent(epoch);
+        return result;
+      });
+    } finally { if (generation) pendingGeneration.delete(name); }
+  }
+  return dispatchToolCall(name, args);
+}
+
+async function dispatchToolCall(name, args, epoch) {
   logger.info('Tool called', { tool: name, args: args ? JSON.stringify(args).substring(0, 200) : 'none' });
 
   switch (name) {
     case 'flow_connect': {
       const v = parseOrThrow(schemas.flow_connect, args, 'flow_connect');
       const result = await launchKiaraProfile(v.headless);
+      assertUiCurrent(epoch);
       if (result.browser) setBrowser(result.browser);
       let page;
       try {
@@ -304,6 +344,7 @@ async function handleToolCall(name, args) {
         page = result.page;
         if (!page) throw new FlowError('BROWSER_NOT_CONNECTED', 'Browser launch returned no usable page');
       }
+      page = guardUiPage(page, epoch);
       let oauthRequired = false;
       if (v.open_flow !== false) {
         const navResult = await navigateToFlow(page);
@@ -321,10 +362,9 @@ async function handleToolCall(name, args) {
       let models = null;
       if (v.open_flow !== false) {
         try {
-          models = await Promise.race([
-            discoverModels(page),
-            new Promise(res => setTimeout(() => res(null), 25000)),
-          ]);
+          // The observer owns a bounded deadline. Keep the lease until it
+          // returns; racing it leaves uncancelled UI work behind.
+          models = await discoverModels(page, { timeoutMs: 25000 });
         } catch (e) {
           logger.debug('Connect-time model discovery skipped', { error: e.message });
         }
@@ -368,7 +408,8 @@ async function handleToolCall(name, args) {
     }
 
     case 'flow_status': {
-      const status = await handleFlowStatus();
+      const v = parseOrThrow(schemas.flow_status, args, 'flow_status');
+      const status = await handleFlowStatus(v);
       return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
     }
 
@@ -560,9 +601,25 @@ async function shutdown(signal) {
   process.exit(0);
 }
 
-process.once('SIGINT', () => shutdown('SIGINT'));
-process.once('SIGTERM', () => shutdown('SIGTERM'));
+export { TOOL_DEFINITIONS, handleToolCall };
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-logger.info('Google Flow Browser MCP server running on stdio');
+export async function startServer() {
+  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  logger.info('Google Flow Browser MCP server running on stdio');
+}
+
+function isDirectEntry() {
+  try {
+    if (!process.argv[1]) return false;
+    return path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectEntry()) {
+  await startServer();
+}

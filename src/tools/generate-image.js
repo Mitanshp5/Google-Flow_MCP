@@ -3,13 +3,19 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { saveMetadata } from '../utils/file-manager.js';
-import { ensureProjectInContext } from '../navigation/project-navigator.js';
+
+import { ensureProjectInContext, extractProjectId } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
-import { get } from '../utils/config.js';
+import { get, getFlowHome } from '../utils/config.js';
 import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles, findActionButton, GENERATE_BUTTON_SELECTORS } from '../browser/safe-actions.js';
-import { resolveModel, getUniverse } from '../utils/models.js';
+import { resolveModel, getUniverse, isModelLiveVerified } from '../utils/models.js';
 import { resolveSafePath } from '../utils/sanitize.js';
+import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js';
+import { createOperationStore } from '../domain/operations.js';
+import { extractObservedAccount } from '../browser/app-state.js';
+import { parseCostLabel } from '../browser/cost-quote.js';
+import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
 import fs from 'fs';
 
 function selectModel(requested) {
@@ -25,7 +31,7 @@ function availableImageModels() {
 function selectRatio(requested) {
   const ratios = getUniverse().ratios;
   if (!requested || ratios.map(r => r.toLowerCase()).includes(String(requested).toLowerCase())) {
-    return requested || get('defaultRatio', '16:9');
+    return requested || get('defaultImageRatio', '1:1');
   }
   return null;
 }
@@ -43,7 +49,7 @@ export async function handleGenerateImage(args) {
   const job = jobQueue.createJob('image_generation', {
     prompt,
     model: args.model || 'auto',
-    ratio: args.ratio || '16:9',
+    ratio: args.ratio || get('defaultImageRatio', '1:1'),
     auto_confirm: autoConfirm,
     quantity: qty,
     useCharacter: args.use_character,
@@ -57,10 +63,14 @@ export async function handleGenerateImage(args) {
     jobQueue.startJob(job.id);
     const page = getPage();
 
+    return await withUiTransaction(async ({ epoch }) => {
+    assertUiCurrent(epoch);
+
     // STEP 1: Ensure we're in a project context
     await ensureProjectInContext(page, {
       name: args.project_name,
       campaign: args.campaign,
+      project_url: args.project_url,
     });
 
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
@@ -174,11 +184,13 @@ export async function handleGenerateImage(args) {
     await page.waitForTimeout(500);
     const filledText = await promptInput.textContent().catch(() => '')
       || await promptInput.inputValue().catch(() => '');
-    if (!filledText || !filledText.includes(prompt.slice(0, 40))) {
+    const normalizedExpected = prompt.replace(/\s+/g, ' ').trim();
+    const normalizedActual = String(filledText).replace(/\s+/g, ' ').trim();
+    if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
         'Prompt fill could not be verified in the input (read-back mismatch). Refusing to continue.',
-        { expectedHead: prompt.slice(0, 40), actualHead: String(filledText).slice(0, 80) });
+        { expected: prompt, actual: String(filledText) });
     }
 
     // P0-1: upload local reference_images BEFORE @ mentions (previously a
@@ -240,170 +252,137 @@ export async function handleGenerateImage(args) {
       await page.waitForTimeout(300);
     }
 
+    // Positive evidence required for every required field
+    const modelVerified = Boolean(
+      postState?.model &&
+      (postState.model.toLowerCase() === model.toLowerCase() || isModelLiveVerified(model, postState.model))
+    );
+    const ratioVerified = Boolean(postState?.ratio && postState.ratio === ratio);
+    const quantityVerified = Boolean(postState?.quantity && postState.quantity === qty);
+
+    // Failed required references must prevent readiness
+    const refImagesOk = refPaths.length === 0 || Boolean(refAttach?.verified);
+    const mentionsOk = mentionNames.length === 0 || (mentionResults.failed.length === 0 && mentionResults.inserted.length >= mentionNames.length);
+    const referencesVerified = refImagesOk && mentionsOk;
+
+    const isReady = modelVerified && ratioVerified && quantityVerified && referencesVerified;
+
+    const settingsVerification = {
+      requested: { model, ratio, quantity: qty },
+      actual: {
+        model: postState?.model || null,
+        ratio: postState?.ratio || null,
+        quantity: postState?.quantity || null,
+      },
+      verified: isReady,
+      references_verified: referencesVerified,
+    };
+
     // ⚠️ STEP 7: DECISION POINT — auto_confirm determines if we click Generate
     if (!autoConfirm) {
       // SAFE MODE: Setup only, no click. Return "ready_for_confirmation".
       const setupScreenshot = await takeScreenshot(page, 'image-ready-for-confirmation');
       const result = {
-        status: 'ready_for_confirmation',
+        status: isReady ? 'ready_for_confirmation' : 'prepared_unverified',
         type: 'image',
-        message: '✅ Prompt, model and ratio are ready. No credits consumed. ' +
-          'To generate and consume credits, call again with auto_confirm=true.',
+        message: isReady
+          ? '✅ Prompt, model and ratio are prepared. No credits consumed. ' +
+            'To generate and consume credits, call again with auto_confirm=true.'
+          : '⚠️ Image setup completed with unverified settings or references. Review UI state before confirming.',
         model_used: model,
         ratio,
+        quantity: qty,
         prompt,
+        settings_verification: settingsVerification,
         ingredients_inserted: mentionResults.inserted,
         ingredients_failed: mentionResults.failed,
-        references,
+        references: {
+          ...references,
+          verified: referencesVerified,
+        },
         account: get('expectedAccount'),
         screenshot: setupScreenshot,
         jobId: job.id,
       };
+      assertUiCurrent(epoch);
       jobQueue.completeJob(job.id, result);
       return result;
     }
 
-    // 🛡️ SAFETY: Pre-generation screenshot verification
-    logger.info('⚠️ auto_confirm=true — running safety checks before clicking Generate');
-    await takeScreenshot(page, 'pre-generate-verification');
+    // Live submission path: auto_confirm=true requested.
+    // Must extract verified observed bindings from actual page state.
+    // Unverified or missing bindings fail closed (denied).
+    assertUiCurrent(epoch);
 
-    // STEP 8: Find generate button (P1-4: same ordered lookup; fail closed).
-    const foundLiveBtn = await findActionButton(page, GENERATE_BUTTON_SELECTORS);
-    if (!foundLiveBtn) {
-      await takeScreenshot(page, 'no-generate-btn');
-      throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button not found');
-    }
-    logger.info('Generate button located', { matched: foundLiveBtn.matched });
-    const generateBtnLocator = foundLiveBtn.locator;
-
-    const isDisabled = await generateBtnLocator.isDisabled().catch(() => false);
-    if (isDisabled) {
-      await takeScreenshot(page, 'generate-disabled');
-      throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button is disabled');
+    const pageHtml = await page.content().catch(() => '');
+    let observedAccount = extractObservedAccount(pageHtml);
+    if (!observedAccount && !pageHtml) {
+      try {
+        const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
+        observedAccount = extractObservedAccount(fallbackHtml);
+      } catch { /* ignore */ }
     }
 
-    // STEP 10: Click generate ⚠️ CREDITS WILL BE CONSUMED
-    logger.info('⚠️⚠️⚠️ Clicking Generate — credits will be consumed');
-    await generateBtnLocator.click();
+    const currentUrl = page.url() || '';
+    const observedProjectId = extractProjectId(currentUrl);
+    const verifiedSettings = settingsVerification?.verified ? settingsVerification.actual : null;
 
-    // STEP 11: Handle two possible generation flows:
-    //   A) Agent-mediated: Agent asks "Accept?" before generating (when switching modes)
-    //   B) Direct: generation starts immediately (most common)
-    // Try Agent first (short wait), fall through to direct if not detected
-
-    let flowMode = 'direct';
-    logger.info('Checking for Agent confirmation dialog (5s window)...');
-    const acceptTimeoutMs = get('agentResponseTimeoutMs', get('generationPollIntervalMs', 5000));
-    const acceptStart = Date.now();
-
-    while (Date.now() - acceptStart < acceptTimeoutMs) {
-      const pageText = await page.evaluate(() => document.body.innerText).catch(() => '');
-      if (pageText.includes('Accept') || pageText.includes('Approve')) {
-        logger.info('Agent confirmation dialog detected — switching to Agent flow');
-        const acceptBtn = page.locator('button').filter({ hasText: /Accept|Approve/ }).first();
-        await acceptBtn.click();
-        logger.info('Generation confirmed via Agent');
-        flowMode = 'agent';
-        break;
-      }
-      await page.waitForTimeout(500);
-    }
-
-    logger.info('Generation flow', { mode: flowMode });
-
-    // STEP 12: Wait for images to appear in the DOM
-    logger.info('Waiting for generated images...');
-    let generatedImageUuids = [];
-    const genTimeoutMs = get('generationTimeoutMs', get('jobTimeoutMs', 120000));
-    const genStart = Date.now();
-    let lastProgressLog = 0;
-
-    while (Date.now() - genStart < genTimeoutMs) {
-      await page.waitForTimeout(2000);
-
-      const imageUuids = await page.evaluate(() => {
-        const imgs = Array.from(document.querySelectorAll('img'));
-        const uuids = [];
-        imgs.forEach(img => {
-          const src = img.src || '';
-          const match = src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
-          if (match && img.width > 100) {
-            uuids.push(match[1]);
-          }
-        });
-        return [...new Set(uuids)];
+    const baselineIds = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll('img'));
+      const ids = [];
+      imgs.forEach(img => {
+        const src = img.src || '';
+        const match = src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
+        if (match) ids.push(match[1]);
       });
+      return [...new Set(ids)];
+    }).catch(() => []);
+    const baseline = { ids: baselineIds, observedAt: Date.now() };
 
-      if (imageUuids.length > 0) {
-        generatedImageUuids = imageUuids;
-        logger.info('Generated images detected in DOM', { count: imageUuids.length });
-        break;
+    const costText = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('*'));
+      for (const el of els) {
+        const text = (el.innerText || el.textContent || '').trim();
+        if (/generating will use \d+ credits|\d+\s*credits?/i.test(text) && text.length < 60) {
+          return text;
+        }
       }
+      return null;
+    }).catch(() => null);
 
-      const hasDownload = await page.locator(
-        'text=Download, [aria-label*="download" i]'
-      ).first().isVisible().catch(() => false);
-      if (hasDownload) {
-        logger.info('Download button appeared after generation');
-        break;
-      }
-
-      if (Date.now() - lastProgressLog >= 30000) {
-        lastProgressLog = Date.now();
-        logger.info('Still waiting for images...', { elapsed: Date.now() - genStart });
-        await takeScreenshot(page, `gen-wait-${Math.round((Date.now() - genStart) / 1000)}s`);
+    let quote = null;
+    if (costText) {
+      const parsed = parseCostLabel(costText, { quantity: qty });
+      if (parsed.state === 'known') {
+        quote = {
+          total: parsed.totalUpperBound,
+          unit: parsed.unit,
+          quantity: parsed.quantity,
+          raw: parsed.raw,
+          observedAt: Date.now(),
+        };
       }
     }
 
-    if (generatedImageUuids.length === 0) {
-      await takeScreenshot(page, 'no-images-detected');
-      throw new FlowError(ErrorCodes.GENERATION_TIMEOUT,
-        'Generation completed but no images were detected in the DOM. ' +
-        'Check the Flow project content library.');
-    }
-
-    // STEP 13: Images are in the project — no download needed.
-    // Return the project URL and image UUIDs so the user can view them in the browser.
-    const projectUrl = page.url();
-    const imageUrls = generatedImageUuids.map(
-      uuid => `https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=${uuid}`
-    );
-
-    saveMetadata(job.id, {
-      type: 'image',
-      model,
-      ratio,
-      auto_confirm: true,
-      quantity: qty,
-      prompt,
-      ingredients_requested: mentionNames,
-      ingredients_inserted: mentionResults.inserted,
-      ingredients_failed: mentionResults.failed,
-      references,
-      jobId: job.id,
-      imageUuids: generatedImageUuids,
-      projectUrl,
+    // Delegate to W05 submission adapter: enforces verified bindings,
+    // checks UI transaction epoch, runs atomic durable commit (commitPreInvocation),
+    // records invocation boundary, and keeps remote execution safely disabled.
+    const requestPayload = { prompt, model, ratio, quantity: qty, type: 'image' };
+    const submissionContext = await buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator: promptInput, refs: refPaths, mentionNames });
+    return await executeDurableSubmission({
+      page,
+      epoch,
+      opStore: createOperationStore(getFlowHome()),
+      requestPayload,
+      observedAccount,
+      observedProjectId,
+      verifiedSettings,
+      refs: refPaths,
+      baseline,
+      quote,
+      ...submissionContext,
     });
-
-    jobQueue.completeJob(job.id, {
-      status: 'success',
-      type: 'image',
-      account: get('expectedAccount'),
-      model_used: model,
-      ratio,
-      prompt,
-      ingredients_inserted: mentionResults.inserted,
-      ingredients_failed: mentionResults.failed,
-      references,
-      image_count: generatedImageUuids.length,
-      image_uuids: generatedImageUuids,
-      image_urls: imageUrls,
-      project_url: projectUrl,
-      credits_consumed: true,
-      message: `${generatedImageUuids.length} image(s) generated. View them in the project: ${projectUrl}`,
-    });
-
-    return jobQueue.getJob(job.id).result;
+    }); // end withUiTransaction
   } catch (err) {
     try {
       await takeScreenshot(getPage(), 'generate-image-error');

@@ -5,8 +5,13 @@ import { getFlowHome, get } from '../utils/config.js';
 
 // Fallback catalog used only when neither user config nor live discovery
 // has produced a list (first run, offline). Live discovery overwrites this.
+// W03: exact live image identities preserved verbatim (Pro / 2 Lite / 2.1 per
+// manual-live-image-models.json). Stale "Nano Banana 2" is NOT a live model —
+// it is kept out of the fallback so callers cannot mistake it for availability.
+// Fallback entries carry source:fallback provenance (see getModelProvenance),
+// never source:live.
 export const FALLBACK_CATALOG = {
-  imageModels: ['Nano Banana Pro', 'Nano Banana 2', 'Imagen 4'],
+  imageModels: ['Nano Banana Pro', 'Nano Banana 2 Lite', 'Nano Banana 2.1', 'Imagen 4'],
   videoModels: ['Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite', 'Omni Flash', 'Omni 1.1 Flash'],
   ratios: ['16:9', '4:3', '1:1', '3:4', '9:16'],
   videoRatios: ['16:9', '9:16'],
@@ -142,18 +147,19 @@ function liveCapsFor(lowerName) {
 }
 
 /**
- * Ingredients duration gate (P1-2): previously a hardcoded model-blind
- * `!== '8s'` check in the video handler. Now data-driven off caps, but
- * every model — known or not — still resolves to the conservative '8s'
- * force, so behavior is identical today. P1-3 may relax per-model values
- * from live discovery; until then nothing is asserted about any model.
- * Returns { duration, forced }.
+ * Ingredients duration gate (parent #2 correction): model-blind 8s force
+ * REMOVED. Previously every model with ingredients coerced to 8s, which hid
+ * unknown/unsupported combinations as false-ready. Now always passes through
+ * the requested duration (forced:false); callers must use
+ * getDurationVerdict() with the exact bound capability record and BLOCK on
+ * unknown/unsupported instead of coercing. Preserves syntax vs semantics
+ * (parse via capabilities.parseDurationSyntax upstream).
+ * Returns { duration, forced:false }.
  */
 export function resolveIngredientsDuration(caps, requestedDuration, hasIngredients) {
+  void caps;
   if (!hasIngredients) return { duration: requestedDuration, forced: false };
-  const need = caps?.ingredientsRequireDuration ?? DEFAULT_CAPS.ingredientsRequireDuration;
-  if (need === requestedDuration) return { duration: requestedDuration, forced: false };
-  return { duration: need, forced: true };
+  return { duration: requestedDuration, forced: false };
 }
 
 /**
@@ -175,10 +181,11 @@ export function modelTokens(name) {
 export function resolveModel(requested, kind = 'video') {
   if (!requested || String(requested).toLowerCase() === 'auto') {
     // Defaults are config-overridable (defaultVideoModel/defaultImageModel);
-    // literals below are last-resort fallbacks only.
+    // literals below are last-resort fallbacks only. W03: image default is the
+    // observed live Pro variant, never the stale "Nano Banana 2".
     const def = kind === 'video'
       ? get('defaultVideoModel', 'Veo 3.1 - Fast')
-      : get('defaultImageModel', 'Nano Banana 2');
+      : get('defaultImageModel', 'Nano Banana Pro');
     return { name: def, caps: capsFor(def), from: 'default' };
   }
   const norm = String(requested).trim().toLowerCase();
@@ -205,4 +212,93 @@ export function resolveModel(requested, kind = 'video') {
     return null;
   }
   return { name: best[0].candidate, caps: capsFor(best[0].candidate), from: 'tokens' };
+}
+
+/**
+ * W03 provenance (parent #4 correction): config is a planning candidate,
+ * NOT observed availability. Cached live observations require freshness and
+ * account/project binding; stale or unbound cache is not currently available.
+ * UI selection readback (isModelLiveVerified) may verify an exact model live
+ * regardless of fallback/config provenance.
+ * getModelProvenance(name, opts) where opts = { nowMs, accountKey, projectId,
+ * maxAgeMs }. Returns { name, source, available }.
+ * source: live|live-cache|config|fallback|unknown. available:true only for
+ * fresh, binding-matched live cache.
+ */
+export function getModelProvenance(name, opts = {}) {
+  const norm = String(name || '').trim().toLowerCase();
+  if (!norm) return { name: String(name || ''), source: 'unknown', available: false };
+  const nowMs = opts.nowMs ?? Date.now();
+  const maxAgeMs = opts.maxAgeMs ?? LIVE_CAPS_MAX_AGE_MS;
+  try {
+    const cache = loadCatalog();
+    if (cache) {
+      const cached = [...(cache?.imageModels || []), ...(cache?.videoModels || [])].map((s) => String(s).toLowerCase());
+      if (cached.includes(norm)) {
+        const observedAt = cache.observedAt || cache.discoveredAt || cache.capabilitiesObservedAt || cache.savedAt;
+        const age = nowMs - new Date(observedAt).getTime();
+        const fresh = Number.isFinite(age) && age >= 0 && age <= maxAgeMs;
+        if (!fresh) {
+          // Stale cache is not currently available (parent #4).
+        } else if (cache.accountKey || cache.projectId) {
+          // Bound cache requires matching binding.
+          const accountOk = !cache.accountKey || !opts.accountKey || cache.accountKey === opts.accountKey;
+          const projectOk = !cache.projectId || !opts.projectId || cache.projectId === opts.projectId;
+          if (accountOk && projectOk) {
+            return { name: String(name), source: cache?.source === 'live' ? 'live' : 'live-cache', available: true };
+          }
+        } else if (!opts.accountKey && !opts.projectId) {
+          // Unbound cache with no binding requested: accept as live-cache
+          // (legacy caches predate binding), but flag needsBinding.
+          return { name: String(name), source: cache?.source === 'live' ? 'live' : 'live-cache', available: true, needsBinding: true };
+        } else {
+          // Caller requires binding but cache has none → not available.
+        }
+      }
+    }
+  } catch { /* fall through */ }
+  const cfgImages = Object.keys(get('imageModels', {})).map((s) => s.toLowerCase());
+  const cfgVideos = Object.keys(get('videoModels', {})).map((s) => s.toLowerCase());
+  if (cfgImages.includes(norm) || cfgVideos.includes(norm)) {
+    return { name: String(name), source: 'config', available: false, reason: 'config is planning candidate, not observed availability' };
+  }
+  const fb = [...FALLBACK_CATALOG.imageModels, ...FALLBACK_CATALOG.videoModels].map((s) => s.toLowerCase());
+  if (fb.includes(norm)) {
+    return { name: String(name), source: 'fallback', available: false };
+  }
+  return { name: String(name), source: 'unknown', available: false };
+}
+
+export function listModelsWithProvenance(kind = 'video', opts = {}) {
+  const universe = kind === 'image' ? getUniverse().imageModels : getUniverse().videoModels;
+  return universe.map((name) => ({ name, ...getModelProvenance(name, opts) }));
+}
+
+/**
+ * UI selection readback may verify an exact model live regardless of
+ * fallback/config provenance (parent #4). Exact (case-insensitive,
+ * punctuation-insensitive) match between requested and observed chip/row.
+ */
+export function isModelLiveVerified(requested, observed) {
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const a = norm(requested);
+  const b = norm(observed);
+  return Boolean(a && b && a === b);
+}
+
+/**
+ * W03 semantic durations: the live verified set for this session.
+ * Returns { durations, source } where source is live-cache|config|fallback|unknown.
+ * Empty durations means unknown (blocks per §9.1) — never synthesize 1-30.
+ */
+export function getLiveDurations() {
+  try {
+    const cache = loadCatalog();
+    if (Array.isArray(cache?.durations) && cache.durations.length > 0) {
+      return { durations: [...cache.durations], source: cache.source || 'live-cache' };
+    }
+  } catch { /* ignore */ }
+  const cfg = get('durations', null);
+  if (Array.isArray(cfg) && cfg.length > 0) return { durations: [...cfg], source: 'config' };
+  return { durations: [...FALLBACK_CATALOG.durations], source: 'fallback' };
 }

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import { FlowError } from './errors.js';
 import { getFlowHome, get } from './config.js';
 
 // Every CSS/role/text selector the automation depends on lives HERE as an
@@ -107,14 +108,45 @@ function mapPath() {
   return path.join(getFlowHome(), 'config', 'selectors.map.json');
 }
 
-function loadMap() {
+export const SELECTOR_MAP_VERSION = 1;
+
+export function isExecutableSelectorList(value) {
+  return Array.isArray(value) && value.length > 0 && value.every((s) => typeof s === 'string');
+}
+
+function loadRawMap() {
+  const f = mapPath();
+  if (!fs.existsSync(f)) return { file: f, parsed: {}, corrupt: false, backup: null };
+  const raw = fs.readFileSync(f, 'utf-8');
   try {
-    const f = mapPath();
-    if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf-8'));
-  } catch (e) {
-    logger.debug('Selector map unreadable', { error: e.message });
+    return { file: f, parsed: JSON.parse(raw), corrupt: false, backup: null };
+  } catch {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backup = `${f}.corrupt.${stamp}.bak`;
+    fs.writeFileSync(backup, raw);
+    return { file: f, parsed: {}, corrupt: true, backup };
   }
-  return {};
+}
+
+function splitStore(parsed) {
+  const executable = {};
+  if (parsed && typeof parsed === 'object') {
+    const envelope = parsed.selectors;
+    if (envelope && typeof envelope === 'object' && !Array.isArray(envelope)) {
+      for (const [k, v] of Object.entries(envelope)) {
+        if (isExecutableSelectorList(v)) executable[k] = v;
+      }
+    }
+    for (const [k, v] of Object.entries(parsed)) {
+      if (['selectors', 'observations', 'version', '_lastUpdated', '_description'].includes(k)) continue;
+      if (isExecutableSelectorList(v) && !executable[k]) executable[k] = v;
+    }
+  }
+  return executable;
+}
+
+function loadMap() {
+  return loadRawMap().parsed;
 }
 
 /**
@@ -122,14 +154,15 @@ function loadMap() {
  * Supports {PLACEHOLDER} templating via vars (e.g. {MODE}).
  */
 export function getSelectors(key, vars = {}) {
-  const map = loadMap();
-  const fromMap = Array.isArray(map[key]) ? map[key] : null;
-  const fromConfig = get(`selectors.${key}`, null);
-  const list = fromMap || (Array.isArray(fromConfig) ? fromConfig : null) || BUILTIN_SELECTORS[key] || [];
+  const executable = splitStore(loadMap());
+  const fromMap = isExecutableSelectorList(executable[key]) ? executable[key] : null;
+  const configured = get(`selectors.${key}`, null);
+  const fromConfig = isExecutableSelectorList(configured) ? configured : null;
+  const list = fromMap || fromConfig || BUILTIN_SELECTORS[key] || [];
   if (!BUILTIN_SELECTORS[key]) logger.debug('Unknown selector key', { key });
   return list.map(s => {
     let out = s;
-    for (const [k, v] of Object.entries(vars)) out = out.replace(`{${k}}`, v);
+    for (const [k, v] of Object.entries(vars)) out = out.replace(`{${k}}`, String(v));
     return out;
   });
 }
@@ -139,22 +172,30 @@ export function getSelectors(key, vars = {}) {
  * Live self-healing: discovery results feed back into the map.
  */
 export function noteSelectors(key, selectors) {
+  const { file: f, parsed, corrupt, backup } = loadRawMap();
+  if (corrupt) {
+    throw new FlowError('STORAGE_CORRUPT', 'selector map corrupt; refusing to overwrite', { file: f, backup });
+  }
   try {
-    const f = mapPath();
-    const map = loadMap();
-    const fresh = (Array.isArray(selectors) ? selectors : [selectors]).filter(Boolean);
+    const executable = splitStore(parsed);
+    const fresh = (Array.isArray(selectors) ? selectors : [selectors]).filter((s) => typeof s === 'string' && s);
     if (!fresh.length) return;
-    const merged = [...fresh, ...((Array.isArray(map[key]) ? map[key] : []))].filter(
+    const merged = [...fresh, ...((Array.isArray(executable[key]) ? executable[key] : []))].filter(
       (s, i, a) => a.indexOf(s) === i
     ).slice(0, 12);
-    map[key] = merged;
-    map._lastUpdated = new Date().toISOString();
+    executable[key] = merged;
+    const out = { ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+    out.version = SELECTOR_MAP_VERSION;
+    out._lastUpdated = new Date().toISOString();
+    out.selectors = { ...(out.selectors && typeof out.selectors === 'object' ? out.selectors : {}), ...executable };
+    for (const [k, v] of Object.entries(executable)) out[k] = v;
     const dir = path.dirname(f);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const tmp = `${f}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(map, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2));
     fs.renameSync(tmp, f);
   } catch (e) {
+    if (e instanceof FlowError) throw e;
     logger.debug('Could not persist selectors', { key, error: e.message });
   }
 }

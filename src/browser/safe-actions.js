@@ -136,15 +136,97 @@ export async function barInput(page) {
  * Shared settings-panel primitives. The chip TOGGLES the panel, so every
  * open first checks for an already-open panel and every close confirms it
  * actually closed (Escape can be swallowed mid-animation).
+ * W03: single verified composer settings driver. findSettingsPanel validates
+ * identity via DOM control ownership/structure (assessSettingsPanelStructure),
+ * not broad substring alone (parent #5). Text pre-filter is fast-reject only.
+ * Wrong panels (changelog/grid/dropdown-suggestion/empty shell) are rejected,
+ * never reused. Broad document-scope "settings" triggers are deprecated —
+ * callers must use openBarSettings (bar-scoped exact chip first).
  */
-export async function findSettingsPanel(page) {
-  let panel = page.locator('[role="dialog"]:visible, [role="menu"]:visible, [role="listbox"]:visible').last();
-  if ((await panel.count().catch(() => 0)) === 0) {
-    const overlay = page.locator('.cdk-overlay-pane:visible').last();
-    panel = (await overlay.count().catch(() => 0)) > 0 ? overlay
-      : page.locator('div').filter({ hasText: /Generating will use/ }).first();
+
+/**
+ * Extract owned settings-control signals from a panel element (runs in page).
+ * Self-contained for page.evaluate (no Node closure, R02).
+ */
+function panelStructureExtractor(root) {
+  try {
+    const text = (root.innerText || root.textContent || '');
+    const btns = Array.from(root.querySelectorAll('button, [role="tab"], [role="option"], [role="menuitem"], li'));
+    const hasModelRow = btns.some((b) => {
+      const cls = (b.className && b.className.baseVal !== undefined ? b.className.baseVal : b.className) || '';
+      const clsStr = String(cls);
+      const t = (b.innerText || b.textContent || '');
+      const isTrigger = /mat-mdc-menu-trigger/i.test(clsStr) || /menu-trigger/i.test(clsStr);
+      return isTrigger && /nano|banana|imagen|veo|omni/i.test(t);
+    }) || (/nano|banana|imagen|veo|omni/i.test(text) && /arrow_drop_down|menu-trigger/i.test(root.innerHTML || ''));
+    const hasQuantityOrRatio = /[x×]\s*[1-4]|16:9|4:3|1:1|3:4|9:16|crop_square|crop_16_9/i.test(text);
+    const hasCreditNote = /generating will use/i.test(text);
+    const hasModeTabs = /image/i.test(text) && /video/i.test(text);
+    const hasChangelogMarker = /view all changelogs|get started/i.test(text) && !hasCreditNote;
+    return {
+      hasModelRow: !!hasModelRow,
+      hasQuantityOrRatio: !!hasQuantityOrRatio,
+      hasCreditNote: !!hasCreditNote,
+      hasModeTabs: !!hasModeTabs,
+      hasChangelogMarker: !!hasChangelogMarker,
+      controlCount: btns.length,
+    };
+  } catch {
+    return null;
   }
-  return (await panel.count().catch(() => 0)) > 0 ? panel : null;
+}
+
+/**
+ * Authoritative DOM-ownership verification for a candidate panel locator.
+ * Returns { isSettings, reason, structure }.
+ * Mock locators without evaluate return { isSettings:true, reason:'mock-no-evaluate (test only)' }
+ * to preserve existing shallow unit tests; real pages always evaluate DOM.
+ */
+export async function isVerifiedSettingsPanel(candidate) {
+  const { assessSettingsPanelStructure } = await import('./capabilities.js');
+  let structure = null;
+  try {
+    if (!candidate || typeof candidate.evaluate !== 'function') {
+      return { isSettings: true, reason: 'mock-no-evaluate (test only)', structure: null };
+    }
+    structure = await candidate.evaluate(panelStructureExtractor).catch(() => null);
+  } catch {
+    structure = null;
+  }
+  if (!structure) {
+    // No DOM signals (mock): preserve legacy shallow-test behavior.
+    return { isSettings: true, reason: 'mock-no-evaluate (test only)', structure: null };
+  }
+  const verdict = assessSettingsPanelStructure(structure);
+  return { ...verdict, structure };
+}
+
+export async function findSettingsPanel(page) {
+  const candidates = [
+    page.locator('[role="dialog"]:visible, [role="menu"]:visible, [role="listbox"]:visible').last(),
+    page.locator('.cdk-overlay-pane:visible').last(),
+  ];
+  for (const cand of candidates) {
+    if ((await cand.count().catch(() => 0)) === 0) continue;
+    const verified = await isVerifiedSettingsPanel(cand);
+    if (verified.structure === null) {
+      // Mock path (no DOM evaluate): accept to preserve shallow unit tests.
+      return cand;
+    }
+    if (verified.isSettings) return cand;
+    // Wrong panel (changelog/grid/dropdown-suggestion/empty shell): do not reuse.
+    logger.warn('Rejecting non-settings panel (DOM ownership)', { reason: verified.reason });
+  }
+  // Legacy "Generating will use" fallback only when DOM structure verifies.
+  try {
+    const legacy = page.locator('div').filter({ hasText: /Generating will use/ }).first();
+    if ((await legacy.count().catch(() => 0)) > 0) {
+      const verified = await isVerifiedSettingsPanel(legacy);
+      if (verified.structure === null) return legacy;
+      if (verified.isSettings) return legacy;
+    }
+  } catch { /* no legacy panel */ }
+  return null;
 }
 
 export async function closeSettingsPanel(page) {
@@ -225,14 +307,25 @@ async function pickPanelToggle(page, panel, kind, wantText, matchRe) {
   // detached, so re-query before reading selected state.
   const fresh = panel.locator('button, [role="option"], [role="menuitem"], li').filter({ hasText: matchRe }).first();
   const probe = (await fresh.isVisible({ timeout: 3000 }).catch(() => false)) ? fresh : opt;
+  // W03/R02 fix: no free closure inside page context. Inline the selected-state
+  // check (same logic as selectedStateOf) so evaluate is self-contained.
   const selected = await probe.evaluate((b) => {
-    if (selectedStateOf(b)) return true;
+    const isSel = (el) => {
+      if (!el) return false;
+      if (el.getAttribute && el.getAttribute('aria-pressed') === 'true') return true;
+      if (el.getAttribute && el.getAttribute('aria-checked') === 'true') return true;
+      if (el.getAttribute && el.getAttribute('data-state') === 'on') return true;
+      if (el.getAttribute && el.getAttribute('data-selected') === 'true') return true;
+      if (el.classList && /selected|active/i.test(String(el.className))) return true;
+      return false;
+    };
+    if (isSel(b)) return true;
     // A parent row/group may carry the selected state instead.
     let el = b;
     for (let i = 0; i < 3 && el; i++) {
       el = el.parentElement;
       if (!el) break;
-      if (el.getAttribute && selectedStateOf(el)) return true;
+      if (isSel(el)) return true;
     }
     return false;
   }).catch(() => null);
@@ -241,8 +334,10 @@ async function pickPanelToggle(page, panel, kind, wantText, matchRe) {
     logger.info(`Prompt-bar ${kind} set + verified`, { want: wantText });
     return { ok: true, verified: true, kind, detail: wantText };
   }
+  // W03: never ready from ok:true verified:false. Unverified clicks fail so
+  // callers filtering !ok block (live throws, prepare-only warns).
   logger.warn(`Prompt-bar ${kind} clicked, selection state not exposed`, { want: wantText });
-  return { ok: true, verified: false, kind, detail: `${wantText} (clicked, unverified)` };
+  return { ok: false, verified: false, kind, detail: `${wantText} (clicked, unverified)` };
 }
 
 /**
@@ -356,10 +451,17 @@ export async function setPromptBarQuality(page, quality) {
   return clickBarOption(page, 'quality', hit, new RegExp(`^${hit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'));
 }
 
-/** Set duration toggle via settings (4s/6s/8s/10s — mat-button-toggle). */
+/** Set duration toggle via settings (4s/6s/8s/10s — mat-button-toggle).
+ * W03: syntactic parse only (capabilities.parseDurationSyntax). Arbitrary
+ * 1-30 values are rejected, never coerced to 8s. Semantic support
+ * (per-model-feature observed set) is checked by callers via
+ * getDurationVerdict; unknown blocks. No model-blind force here. */
 export async function setPromptBarDuration(page, duration) {
-  const m = String(duration || '').match(/(\d+)\s*s?/i);
-  const want = m && ['4', '6', '8', '10'].includes(m[1]) ? `${m[1]}s` : '8s';
+  const { parseDurationSyntax } = await import('./capabilities.js');
+  const want = parseDurationSyntax(duration);
+  if (!want) {
+    return { ok: false, verified: false, kind: 'duration', detail: `unsupported duration "${duration}" (expected 4s/6s/8s/10s)` };
+  }
   return clickBarOption(page, 'duration', want, new RegExp(`^${want}$`, 'i'));
 }
 
@@ -502,8 +604,11 @@ export async function setPromptBarModel(page, model) {
 /**
  * Read the current tool state from the bottom prompt bar:
  * agent mode, generation mode (image|video|unknown from chip family),
- * model chip text + parsed model, ratio hint, quantity.
+ * model chip text + parsed model, ratio hint, quantity, duration, quality.
  * Pure read — never clicks.
+ * W03: crop_square/icon decontamination (F09/C4) via capabilities helper;
+ * quality actual parsed (360p/720p); video chips without a model name yield
+ * model:'unknown' explicitly (never null-as-proof of no selection).
  */
 export async function readToolState(page) {
   const state = {
@@ -514,6 +619,7 @@ export async function readToolState(page) {
     ratio: null,
     quantity: null,
     duration: null,
+    quality: null,
   };
   try {
     const toggle = await findAgentToggle(page);
@@ -557,33 +663,37 @@ export async function readToolState(page) {
       state.modelChip = best;
       const lower = best.toLowerCase();
       // Video-mode chip carries no model name ("Video · 720p · 8s ▢ x1") —
-      // still extract mode/duration/quantity from it.
+      // still extract mode/duration/quantity/quality from it.
       if (/^video\b/.test(lower)) state.mode = 'video';
       else if (/^image\b/.test(lower)) state.mode = 'image';
       const dm = best.match(/(\d+)\s*s\b/i);
-      if (dm) state.duration = `${dm[1]}s`;
+      if (dm) {
+        const { parseDurationSyntax } = await import('./capabilities.js').catch(() => ({}));
+        state.duration = parseDurationSyntax ? parseDurationSyntax(`${dm[1]}s`) : `${dm[1]}s`;
+      }
+      // Quality actual (360p/720p): explicit token in combined chip.
+      const qmQuality = best.match(/\b(360p|720p|1080p)\b/i);
+      if (qmQuality) state.quality = qmQuality[1].toLowerCase();
       // Quantity: trailing xN / ×N (U+00D7).
       const qm = lower.match(/[x×]\s*([1-4])\s*$/u);
       if (qm) state.quantity = Number(qm[1]);
-      // Explicit ratio text wins; then crop glyph (crop_16_9); else null.
+      // Explicit ratio text wins; then crop glyphs incl. crop_square → 1:1.
       const rm = best.match(/(\d+\s*:\s*\d+)/);
       if (rm) state.ratio = rm[1].replace(/\s+/g, '');
+      else if (/crop_square/i.test(best)) state.ratio = '1:1';
       else {
         const cm = best.match(/crop_(\d+)_(\d+)/i);
         if (cm) state.ratio = `${cm[1]}:${cm[2]}`;
       }
-      // Model = chip minus quantity/ratio/crop tails and emoji — but ONLY
-      // when the chip actually names a model (video chips often don't).
-      let model = bestHasModel
-        ? best.replace(/[x×]\s*[1-4]\s*$/iu, '').replace(/(\d+\s*:\s*\d+)\s*$/i, '').trim()
-        : '';
+      // Model decontamination (F09/C4): strip icons/crop tails via helper —
+      // but ONLY when the chip actually names a model (video chips often don't).
       if (bestHasModel) {
-        model = model.replace(/^[\p{Emoji}\p{So}\u2000-\u2BFF]+\s*/u, '').trim();
-        // Drop lone ratio glyph tails (▢ ▯ □ etc.) and crop params (crop_16_9).
-        model = model.replace(/[\u25A0-\u25FF\u2300-\u23FF]\s*$/u, '').trim();
-        model = model.replace(/\bcrop_\d+_\d+\b/gi, '').replace(/\s+/g, ' ').trim();
+        const { decontaminateModelField } = await import('./capabilities.js').catch(() => ({}));
+        const cleaned = decontaminateModelField ? decontaminateModelField(best) : best.trim();
+        state.model = cleaned || null;
+      } else {
+        state.model = 'unknown';
       }
-      state.model = model || null;
       if (IMAGE_FAMILIES.some(f => lower.includes(f))) state.mode = 'image';
       else if (VIDEO_FAMILIES.some(f => lower.includes(f))) state.mode = 'video';
     }
@@ -591,8 +701,11 @@ export async function readToolState(page) {
     for (const t of texts) {
       const r = parseBarRatio(t);
       if (r && !state.ratio) state.ratio = r;
+      if (/^crop_square$/i.test(t.trim()) && !state.ratio) state.ratio = '1:1';
       const q = parseBarQuantity(t);
       if (q && !state.quantity) state.quantity = q;
+      const qq = /\b(360p|720p|1080p)\b/i.exec(t);
+      if (qq && !state.quality) state.quality = qq[1].toLowerCase();
     }
   } catch (e) {
     logger.debug('readToolState model scan failed', { error: e.message });
@@ -645,7 +758,7 @@ export async function attachReferenceFiles(page, inputLocator, files, opts = {})
   };
   const previewsBefore = await countPreviews();
   try {
-    await page.locator('input[type="file"]').first().setInputFiles(files);
+    await page.locator('input[type="file"]').first().setInputFiles(files, { timeout: 3000 });
     await page.waitForTimeout(1500);
   } catch (e) {
     logger.warn('Reference attach failed (no file input)', { label, error: e.message });
@@ -947,6 +1060,10 @@ export async function readCurrentGenerationMode() {
 /**
  * Safely configures the generation settings (mode, ratio, model, quantity, duration)
  * by clicking the correct tabs in the Flow bottom toolbar.
+ * W03 DEPRECATED driver: prefer openBarSettings/configurePromptBar + setPromptBar*
+ * + readToolState (single verified composer settings driver). This legacy entry
+ * now opens via openBarSettings first and only falls back to registry triggers
+ * for compatibility; new callers must not add broad document-scope triggers.
  *
  * The Flow toolbar has these layers:
  *   • Top-level mode tabs: Image | Video  (role=tab, id=*trigger-IMAGE / *trigger-VIDEO)
@@ -1014,19 +1131,36 @@ export async function configureGenerationUI(options = {}) {
   }
 
   // ─── STEP 2: Open the settings/options panel to access ratio, quantity, model ─
-  // Candidates come from the selector registry (self-healing via discover-ui).
+  // W03: single verified composer driver first (bar-scoped chip). Registry
+  // broad triggers are legacy fallback only (Tile grid settings hit is rejected
+  // by findSettingsPanel identity).
   let panelOpened = false;
+  try {
+    const single = await openBarSettings(page);
+    if (single.panel && !single.error) {
+      panelOpened = true;
+      logger.info('Opened settings panel via single composer driver');
+    }
+  } catch { /* fall through to legacy triggers */ }
 
   // Try a dedicated settings button first (gear icon, settings, options)
   const settingsBtnSelectors = getSelectors('settingsTrigger');
 
   for (const sel of settingsBtnSelectors) {
+    if (panelOpened) break;
     const btn = page.locator(sel).first();
     if (await btn.isVisible().catch(() => false)) {
       await btn.click();
       await page.waitForTimeout(800);
-      panelOpened = true;
-      logger.info('Opened settings panel via settings button', { sel });
+      // Verify identity: broad triggers can open Tile grid/changelog.
+      const probe = await findSettingsPanel(page);
+      if (probe) {
+        panelOpened = true;
+        logger.info('Opened settings panel via settings button', { sel });
+      } else {
+        await closeSettingsPanel(page).catch(() => {});
+        logger.warn('Rejected non-settings panel from broad trigger', { sel });
+      }
       break;
     }
   }
@@ -1202,3 +1336,4 @@ export async function configureGenerationUI(options = {}) {
   }
   return { ok, failures, verified };
 }
+

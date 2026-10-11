@@ -32,23 +32,34 @@ function loadSelectors() {
 }
 
 function saveSelectors(map) {
+  const p = selectorsPath();
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   map._lastUpdated = new Date().toISOString();
-  fs.writeFileSync(selectorsPath(), JSON.stringify(map, null, 2));
+  fs.writeFileSync(p, JSON.stringify(map, null, 2));
   logger.info('Selectors map saved');
 }
 
-// "characters" is NOT a standalone page — it only exists scoped to a project:
-// {flowBase}/project/{projectId}/characters
+// "character" is NOT a standalone page — it only exists scoped to a project:
+// {flowBase}/project/{projectId}/character (singular per F02)
 // Resolved at runtime in handleDiscoverUi via ensureProjectInContext.
-const PROJECT_SUBROUTE_PAGES = ['characters'];
+const PROJECT_SUBROUTE_PAGES = ['characters', 'character'];
 
 // "scenes" (and "images"/"all-media") are NOT separate routes — they are
 // sidebar tabs within the project's main page (same URL, no suffix).
 // Resolved by navigating to the project then clicking the matching tab.
 const PROJECT_TAB_PAGES = {
   scenes: 'Scenes',
+  scene: 'Scenes',
   images: 'Images',
+  image: 'Images',
+  'image-generation': 'Images',
+  'video-generation': 'All Media',
   'all-media': 'All Media',
+  allmedia: 'All Media',
+  imageGeneration: 'Images',
+  videoGeneration: 'All Media',
+  toolsGallery: 'Tools',
 };
 
 function flowBase() {
@@ -65,14 +76,20 @@ const PAGES = {
 
 const PAGE_SELECTOR_KEYS = {
   main: 'main',
-  characters: 'characters',
+  characters: 'character',
+  character: 'character',
   scenes: 'scenes',
+  scene: 'scenes',
+  images: 'images',
+  image: 'images',
+  'image-generation': 'imageGeneration',
+  'video-generation': 'videoGeneration',
+  'all-media': 'allMedia',
   'tools-gallery': 'toolsGallery',
   'tools gallery': 'toolsGallery',
+  tools: 'toolsGallery',
   grid: 'gridArchitect',
   'grid-architect': 'gridArchitect',
-  image: 'imageGeneration',
-  video: 'videoGeneration',
 };
 
 function getPageKey(pageName) {
@@ -87,6 +104,13 @@ export async function handleDiscoverUi(args) {
   let page = getPage();
   const pageName = args.page || 'main';
   const pageKey = getPageKey(pageName);
+  if (pageKey === 'gridArchitect') {
+    return { status: 'unsupported', reason: 'tool_discovery_unverified', page: pageName,
+      message: 'Grid Architect discovery requires a verified native tool surface; no route is guessed.' };
+  }
+  if (!url && !PROJECT_SUBROUTE_PAGES.includes(pageKey) && !PROJECT_TAB_PAGES[pageKey] && !Object.hasOwn(PAGES, pageKey)) {
+    return { status: 'blocked', reason: 'unknown_discovery_page', page: pageName };
+  }
 
   let tabToClick = null;
 
@@ -97,8 +121,9 @@ export async function handleDiscoverUi(args) {
         campaign: args.campaign,
       });
       const projectId = extractProjectId(project.url);
+      const sub = pageKey === 'characters' || pageKey === 'character' ? 'character' : pageKey;
       url = projectId
-        ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/${pageKey}`
+        ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/${sub}`
         : project.url;
     } else if (PROJECT_TAB_PAGES[pageKey]) {
       const project = await ensureProjectInContext(page, {
@@ -116,14 +141,18 @@ export async function handleDiscoverUi(args) {
 
   try {
     // Navigate to the page
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (page.url() !== url) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
     // For sidebar-tab pages (Scenes/Images/All Media), click the tab —
     // these don't have their own URL, just a client-side state change.
     if (tabToClick) {
-      await navigateToSidebar(page, tabToClick);
+      const nav = await navigateToSidebar(page, tabToClick);
+      if (!nav) {
+        return { status: 'blocked', reason: 'requested_view_unverified', page: pageName,
+          requested_view: tabToClick, url: page.url() };
+      }
       await page.waitForTimeout(1500);
     }
 
@@ -155,10 +184,13 @@ export async function handleDiscoverUi(args) {
       t.includes('Model')
     );
 
-    // Extract ratio-related text
-    const ratioTexts = visibleText.filter(t =>
-      t.includes(':') && (t.includes('9') || t.includes('4') || t.includes('3') || t.includes('1'))
-    );
+    // Extract ratio-related text (F11: exclude calendar timestamps/dates like "Jun 15, 10:21 PM")
+    const ratioTexts = visibleText.filter(t => {
+      const norm = t.trim();
+      if (/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/i.test(norm)) return false;
+      if (/\b(AM|PM)\b/i.test(norm)) return false;
+      return /\b(16:9|9:16|1:1|4:3|3:4|2:3|3:2|21:9)\b/.test(norm) || /^\d+\s*:\s*\d+$/.test(norm);
+    });
 
     // Update selectors map
     const selectorsMap = loadSelectors();

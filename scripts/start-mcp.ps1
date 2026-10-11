@@ -8,15 +8,37 @@
   If Chrome isn't running yet, the server will attempt to launch it itself.
 #>
 
+param(
+    [switch]$DryRun,
+    [switch]$Help
+)
+
 $ErrorActionPreference = 'Stop'
+
+# Safe modes BEFORE any side effect (no server start below).
+foreach ($a in $args) {
+    if ($a -eq '--help' -or $a -eq '-h') { $Help = $true }
+    if ($a -eq '--dry-run') { $DryRun = $true }
+}
+if ($Help) {
+    Write-Host 'start-mcp.ps1 [-DryRun] [-Help] (also accepts --dry-run / --help)'
+    Write-Host 'Safe modes: -Help prints this text; -DryRun prints the resolved server entry and CDP port without starting the server.'
+    exit 0
+}
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 $ConfigPath = Join-Path $ProjectDir 'config\flow.config.json'
 
-function Write-Log  { param([string]$Message) Write-Host "[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] INFO  $Message" }
-function Write-Warn { param([string]$Message) Write-Host "[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] WARN  $Message" -ForegroundColor Yellow }
-function Write-Err  { param([string]$Message) Write-Host "[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] ERROR $Message" -ForegroundColor Red }
+# Resolve the server entry: shipped bundle first, src fallback for dev.
+# Both -DryRun and real execution below use this SAME variable, so the
+# plan always reflects the real target (installed packages have no src/).
+$DistEntry = Join-Path $ProjectDir 'dist\index.js'
+$ServerEntry = if (Test-Path $DistEntry) { $DistEntry } else { Join-Path $ProjectDir 'src\index.js' }
+
+function Write-Log  { param([string]$Message) [Console]::Error.WriteLine("[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] INFO  $Message") }
+function Write-Warn { param([string]$Message) [Console]::Error.WriteLine("[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] WARN  $Message") }
+function Write-Err  { param([string]$Message) [Console]::Error.WriteLine("[$(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')] ERROR $Message") }
 
 # --- Check Node.js ---
 $node = Get-Command node -ErrorAction SilentlyContinue
@@ -44,6 +66,10 @@ try {
 }
 
 Write-Log 'Starting Google Flow Browser MCP server...'
+if ($DryRun) {
+    Write-Log "--dry-run: would run node `"$ServerEntry`" cdpPort=$CdpPort (nothing started)."
+    exit 0
+}
 Set-Location $ProjectDir
-& node src/index.js
+& node "$ServerEntry"
 exit $LASTEXITCODE

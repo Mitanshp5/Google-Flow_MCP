@@ -6,8 +6,12 @@ import { get } from '../utils/config.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { launchChromeDirect, setPage, setContext, setConnected, setBrowser, isBrowserConnected } from './connect.js';
 import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platform.js';
+import { checkHeadlessOption, selectFlowTab } from './session.js';
+import { getUiLease, assertUiCurrent } from './ui-transaction.js';
 
 export async function launchKiaraProfile(headless = false) {
+  const epoch = getUiLease().getEpoch();
+  assertUiCurrent(epoch);
   if (isBrowserConnected()) {
     logger.info('Browser already connected, reusing');
     return { success: true, message: 'Already connected' };
@@ -19,36 +23,47 @@ export async function launchKiaraProfile(headless = false) {
   const profileSource = (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), profileName))
     || getChromeProfileSourcePath(profileName);
 
-  if (!chromePath || !fs.existsSync(chromePath)) {
-    throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR,
-      `Chrome not found${chromePath ? ` at ${chromePath}` : ''}. Set "chromeExecutable" in config/flow.config.json to your Chrome install path.`);
+  const headlessCheck = checkHeadlessOption(headless);
+  if (!headlessCheck.supported) {
+    throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR, headlessCheck.blocker);
   }
 
-  if (!fs.existsSync(profileSource)) {
-    throw new FlowError(ErrorCodes.CONFIG_ERROR,
-      `Chrome profile "${profileName}" not found at ${profileSource}. Set "chromeUserDataDir" and "chromeProfile" in config/flow.config.json, and make sure this Chrome profile is signed in with your Google account.`);
-  }
-
-  logger.info('Launching Chrome via direct+CDP method (anti-detection)', { chromePath, profileSource });
-
+  // W02 K03: attach to live CDP BEFORE failing for a missing source profile.
+  // Profile validation applies only to the authorized cold-launch path.
   try {
     // Try connecting to existing Chrome instance first (non-destructive reuse)
     const existing = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    assertUiCurrent(epoch);
     logger.info('Found existing Chrome instance, reusing');
     const ctxs = existing.contexts();
     const ctx = ctxs[0] || await existing.newContext();
+    assertUiCurrent(epoch);
     const pgs = ctx.pages();
-    const pg = pgs.find(p => {
-      try { return p.url().startsWith('http') && !p.url().startsWith('chrome'); } catch { return false; }
-    }) || pgs[0];
+    const urls = pgs.map((p) => { try { return { url: p.url() }; } catch { return { url: '' }; } });
+    const sel = selectFlowTab(urls);
+    const pg = (sel.action === 'reuse' && pgs[sel.index]) || null;
+    const newPage = pg || await ctx.newPage();
+    assertUiCurrent(epoch);
     setBrowser(existing);
     setContext(ctx);
     setConnected(true);
-    if (pg) { setPage(pg); return { browser: existing, context: ctx, page: pg }; }
-    const newPage = await ctx.newPage();
     setPage(newPage);
     return { browser: existing, context: ctx, page: newPage };
-  } catch {
+  } catch (error) {
+    if (error.code === 'STALE_EPOCH') throw error;
+    assertUiCurrent(epoch);
+    // Cold-launch path only: validate executable + source profile here
+    // (attach-first already attempted above, so a missing profile must not
+    // block reuse of a live CDP session).
+    if (!chromePath || !fs.existsSync(chromePath)) {
+      throw new FlowError(ErrorCodes.PLAYWRIGHT_ERROR,
+        `Chrome not found${chromePath ? ` at ${chromePath}` : ''}. Set "chromeExecutable" in config/flow.config.json to your Chrome install path.`);
+    }
+    if (!fs.existsSync(profileSource)) {
+      throw new FlowError(ErrorCodes.CONFIG_ERROR,
+        `Chrome profile "${profileName}" not found at ${profileSource}. Set "chromeUserDataDir" and "chromeProfile" in config/flow.config.json, and make sure this Chrome profile is signed in with your Google account.`);
+    }
+    logger.info('Launching Chrome via direct+CDP method (anti-detection)', { chromePath, profileSource });
     // Launch Chrome directly (not via Playwright) for anti-detection
     return await launchChromeDirect({
       chromePath,

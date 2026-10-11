@@ -5,9 +5,14 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { detectPageElements, ensureManualMode } from '../browser/safe-actions.js';
 import { saveMetadata } from '../utils/file-manager.js';
-import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
-import { renameCharacterTitle } from '../navigation/character-rename.js';
+import { ensureProjectInContext, navigateToSidebar, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
+
 import { escapeRegExp, resolveSafePath } from '../utils/sanitize.js';
+import { isErrorHtml, extractObservedAccount } from '../browser/app-state.js';
+import { get, getFlowHome } from '../utils/config.js';
+import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js';
+import { createOperationStore } from '../domain/operations.js';
+import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import fs from 'fs';
 
 export async function handleCreateCharacter(args) {
@@ -20,6 +25,9 @@ export async function handleCreateCharacter(args) {
   try {
     jobQueue.startJob(job.id);
     const page = getPage();
+
+    return await withUiTransaction(async ({ epoch }) => {
+    assertUiCurrent(epoch);
 
     // Ensure we're inside a project
     await ensureProjectInContext(page, {
@@ -39,25 +47,49 @@ export async function handleCreateCharacter(args) {
     // project has no characters yet, this page IS the "New character"
     // creation form directly, with a "Describe your character..." input,
     // sample prompt cards, Upload and "Add from Project" buttons.)
-    await navigateToSidebar(page, 'Characters');
-    await page.waitForTimeout(2000);
+    const nav = await navigateToSidebar(page, 'Characters');
+    if (!nav.ok) {
+      // F02 fallback: try direct singular /character route
+      const projectId = extractProjectId(page.url());
+      if (projectId) {
+        const charUrl = `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`;
+        await page.goto(charUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(2000);
+      }
+    } else {
+      await page.waitForTimeout(2000);
+    }
+
+    const currentUrl = page.url();
+    const title = await page.title().catch(() => '');
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
+
+    // F02: 404 error check
+    if (isErrorHtml({ title, bodyText, url: currentUrl })) {
+      const out = {
+        status: 'blocked',
+        reason: 'page_not_found',
+        url: currentUrl,
+        message: 'Character route returned 404 or page not found.',
+        screenshot: await takeScreenshot(page, 'characters-404'),
+        jobId: job.id,
+      };
+      jobQueue.failJob(job.id, new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, out.message));
+      return out;
+    }
 
     await takeScreenshot(page, 'characters-section');
 
-    // Are we already on the "New character" creation form?
-    // The form has a textarea/contenteditable with a placeholder or aria-label about character description.
-    // Note: some versions use a plain <p> with placeholder text as a styling trick.
+    // F03: Require feature-specific character form evidence.
+    // The ordinary prompt bar or generic contenteditable alone is NOT proof of a character form!
     const onCreateForm = await page.locator(
       '[placeholder*="Describe your character" i], ' +
       '[data-placeholder*="Describe your character" i], ' +
-      '[aria-label*="Describe your character" i], ' +
-      '[contenteditable="true"]:visible'
+      '[aria-label*="Describe your character" i]'
     ).first().isVisible().catch(() => false);
 
     if (!onCreateForm) {
-      // Otherwise, the project already has characters — look for a button
-      // to open the "New character" creation form.
-      // Common labels: "New character", "New Character", "Create character", "add" FAB
+      // Look for a button to open the "New character" creation form
       const newCharLocator = page.locator(
         'button:has-text("New character"), ' +
         'button:has-text("New Character"), ' +
@@ -66,31 +98,73 @@ export async function handleCreateCharacter(args) {
         'a:has-text("New character")'
       ).first();
 
-      if (!await newCharLocator.isVisible().catch(() => false)) {
+      if (await newCharLocator.isVisible().catch(() => false)) {
+        await newCharLocator.click();
+        await page.waitForTimeout(2000);
+      } else {
+        // F03: Neither character form nor New Character button found.
+        // Return explicit blocker instead of typing description into ordinary video composer!
         const elements = await detectPageElements(page);
-        return {
-          status: 'ui_discovered',
-          message: 'Characters section opened. Neither the character creation form nor a "New Character" button was auto-detected.',
+        const out = {
+          status: 'blocked',
+          reason: 'character_form_not_found',
+          message: 'Character creation form not found (ordinary composer or wrong view displayed). Refusing to type character description into composer.',
           elements: {
             buttons: elements.buttons.map(b => b.text),
             inputs: elements.inputs,
           },
-          screenshot: await takeScreenshot(page, 'characters-ui'),
+          screenshot: await takeScreenshot(page, 'characters-form-missing'),
+          jobId: job.id,
         };
+        jobQueue.failJob(job.id, new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, out.message));
+        return out;
       }
-
-      await newCharLocator.click();
-      await page.waitForTimeout(2000);
     }
 
-    // Fill character description
-    // Try specific selectors first, then fall back to any visible text input
+    const refImages = Array.isArray(args.reference_images) && args.reference_images.length > 0
+      ? args.reference_images
+      : (args.reference_image ? [args.reference_image] : []);
+
+    if (args.auto_confirm === true) {
+      assertUiCurrent(epoch);
+
+      const pageHtml = await page.content().catch(() => '');
+      let observedAccount = extractObservedAccount(pageHtml);
+      if (!observedAccount && !pageHtml) {
+        try {
+          const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
+          observedAccount = extractObservedAccount(fallbackHtml);
+        } catch { /* ignore */ }
+      }
+
+      const observedUrl = page.url() || '';
+      const observedProjectId = extractProjectId(observedUrl);
+      const baseline = { ids: [], observedAt: Date.now() };
+
+      return await executeDurableSubmission({
+        page,
+        epoch,
+        opStore: createOperationStore(getFlowHome()),
+        requestPayload: { name: args.name || null, description: (args.description || args.prompt || '').trim(), type: 'character' },
+        observedAccount,
+        observedProjectId,
+        verifiedSettings: null,
+        refs: refImages || [],
+        baseline,
+        quote: null,
+        approvalChild: null,
+        approvals: null,
+        ledger: null,
+        remoteSubmitFn: null,
+      });
+    }
+
+    // Fill character description into character-specific input ONLY
     const descCandidates = [
       page.locator('[placeholder*="Describe your character" i]').first(),
       page.locator('[data-placeholder*="Describe your character" i]').first(),
-      page.locator('[aria-label*="Describe" i]').first(),
-      page.locator('[contenteditable="true"]:visible').first(),
-      page.locator('textarea:visible').first(),
+      page.locator('[aria-label*="Describe your character" i]').first(),
+      page.locator('form [placeholder*="Describe" i]').first(),
     ];
     let descLocator = null;
     for (const candidate of descCandidates) {
@@ -101,20 +175,23 @@ export async function handleCreateCharacter(args) {
     }
     if (descLocator) {
       await descLocator.click();
-      // Use fill for textarea, type for contenteditable
-      try { await descLocator.fill(''); } catch { /* contenteditable may not support fill */ }
+      try { await descLocator.fill(''); } catch { /* ignore */ }
       await page.waitForTimeout(200);
       await descLocator.type(args.description, { delay: 20 });
     } else {
-      logger.warn('Could not find character description input');
+      const out = {
+        status: 'blocked',
+        reason: 'character_input_not_found',
+        message: 'Character description input not found on character form.',
+        screenshot: await takeScreenshot(page, 'character-input-missing'),
+        jobId: job.id,
+      };
+      jobQueue.failJob(job.id, new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, out.message));
+      return out;
     }
 
     // Upload reference image(s) if provided — supports reference_images (array)
     // or the legacy reference_image (single string)
-    const refImages = Array.isArray(args.reference_images) && args.reference_images.length > 0
-      ? args.reference_images
-      : (args.reference_image ? [args.reference_image] : []);
-
     if (refImages.length > 0) {
       const resolved = [];
       for (const p of refImages) {
@@ -267,73 +344,42 @@ export async function handleCreateCharacter(args) {
       throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Character submit button is disabled');
     }
 
-    await submitBtn.click();
-    logger.info('Character creation submitted — waiting for navigation to character page');
+    // Live character creation path.
+    // Must extract verified observed bindings from actual page state.
+    assertUiCurrent(epoch);
 
-    // Poll for navigation to /character/{id} URL (up to 30s)
-    const submitStart = Date.now();
-    let navigated = false;
-    while (Date.now() - submitStart < 30000) {
-      await page.waitForTimeout(1500);
-      const currentUrl = page.url();
-      if (currentUrl.includes('/character/')) {
-        logger.info('Navigated to character page', { url: currentUrl });
-        navigated = true;
-        break;
-      }
-      // Also check if an error dialog appeared
-      const hasError = await page.locator('[role="alert"], [class*="error"], [class*="Error"]')
-        .first().isVisible().catch(() => false);
-      if (hasError) {
-        const errorText = await page.locator('[role="alert"], [class*="error"]')
-          .first().textContent().catch(() => 'Unknown error');
-        logger.warn('Error dialog appeared after submit', { errorText });
-        await takeScreenshot(page, 'character-submit-error-dialog');
-        break;
-      }
-    }
-    await page.waitForTimeout(1000);
-
-    const characterUrl = page.url();
-    if (!navigated && !characterUrl.includes('/character/')) {
-      throw new FlowError(ErrorCodes.GENERATION_TIMEOUT, 'Character generation timed out or failed to navigate to the character page.');
+    const pageHtml = await page.content().catch(() => '');
+    let observedAccount = extractObservedAccount(pageHtml);
+    if (!observedAccount && !pageHtml) {
+      try {
+        const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
+        observedAccount = extractObservedAccount(fallbackHtml);
+      } catch { /* ignore */ }
     }
 
-    // After submission, Flow navigates to /project/{id}/character/{characterId}
-    // showing "Untitled Character" — rename it to args.name if provided.
-    let renamed = false;
-    if (args.name) {
-      renamed = await renameCharacterTitle(page, args.name);
-    }
+    const observedUrl = page.url() || '';
+    const observedProjectId = extractProjectId(observedUrl);
+    const verifiedSettings = { type: 'character', name: args.name || null, description: args.description || null };
+    const baseline = { ids: [], observedAt: Date.now() };
+    const quote = { total: 0, unit: 'free', quantity: 1, observedAt: Date.now() };
 
-    await takeScreenshot(page, 'character-created');
-
-    saveMetadata(job.id, {
-      type: 'character',
-      name: args.name,
-      description: args.description,
-      model: args.model,
-      referenceImages: refImages,
-      projectName: args.project_name,
-      campaign: args.campaign,
-      jobId: job.id,
-      characterUrl,
-      renamed,
-      status: 'success',
+    return await executeDurableSubmission({
+      page,
+      epoch,
+      opStore: createOperationStore(getFlowHome()),
+      requestPayload: { description: (args.description || args.name || '').trim(), project_name: args.project_name || null, type: 'character' },
+      observedAccount,
+      observedProjectId,
+      verifiedSettings,
+      refs: refImages || [],
+      baseline,
+      quote,
+      approvalChild: args._approvalChild || null,
+      approvals: args._approvals || null,
+      ledger: args._ledger || null,
+      remoteSubmitFn: args._remoteSubmitFn || null,
     });
-
-    jobQueue.completeJob(job.id, {
-      status: 'success',
-      type: 'character',
-      name: args.name,
-      renamed,
-      description: args.description,
-      character_url: characterUrl,
-      message: 'Character created.' + (args.name ? (renamed ? ` Renamed to "${args.name}".` : ` Could not rename to "${args.name}" — still "Untitled Character".`) : ''),
-      screenshot: await takeScreenshot(page, 'character-created'),
-    });
-
-    return jobQueue.getJob(job.id).result;
+    }); // end withUiTransaction
   } catch (err) {
     try { await takeScreenshot(getPage(), 'create-character-error'); } catch { /* ok */ }
     jobQueue.failJob(job.id, err);

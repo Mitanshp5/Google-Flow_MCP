@@ -27,6 +27,7 @@
   },
   "files": [
     "dist/",
+    "scripts/",
     "config/flow.config.example.json",
     "README.md",
     "LICENSE"
@@ -41,7 +42,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "test:smoke": "node scripts/run.js test-flow-image",
-    "typecheck": "node --check src/index.js"
+    "typecheck": "node scripts/check-syntax.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
