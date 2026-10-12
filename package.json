@@ -26,7 +26,8 @@
     "google-flow-mcp": "dist/index.js"
   },
   "files": [
-    "dist/",
+    "dist/index.js",
+    "dist/index.js.map",
     "scripts/",
     "!scripts/*/**",
     "config/flow.config.example.json",

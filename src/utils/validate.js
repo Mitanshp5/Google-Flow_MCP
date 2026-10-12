@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FlowError, ErrorCodes } from './errors.js';
+import { VALID_ASPECT_RATIOS } from '../script/schema.js';
 
 function fmtError(e) {
   try {
@@ -23,10 +24,14 @@ export function parseOrThrow(schema, args, toolName) {
 
 const nonEmpty = (label) => z.string().trim().min(1, `${label} must not be empty`).max(8000);
 
+const exactId = (label, max) => z.string().min(1, `${label} is required`).max(max)
+  .refine(v => v === v.trim() && v.trim().length > 0, { message: `${label} must be exact (no leading/trailing whitespace)` });
+
 export const schemas = {
   flow_connect: z.object({
     headless: z.boolean().optional().default(false),
     open_flow: z.boolean().optional().default(true),
+    cdpPort: z.number().int().min(1).max(65535).optional().describe('CDP port of an already-open Chrome (see flow_list_browser_targets). Defaults to config.'),
   }).passthrough(),
 
   flow_status: z.object({
@@ -88,6 +93,7 @@ export const schemas = {
   flow_create_character: z.object({
     name: nonEmpty('name'),
     description: nonEmpty('description'),
+    archetype: z.string().trim().max(100).optional().describe('Starter card to pick first (The Eccentric, The Professional, The Wildcard, The Familiar, The Wicked, The Fantastical).'),
     reference_images: z.array(z.string().max(1024)).max(8).optional(),
     reference_image: z.string().max(1024).optional(),
     model: z.string().trim().max(100).optional(),
@@ -158,6 +164,33 @@ export const schemas = {
     project_url: z.string().trim().max(2000).optional(),
   }).passthrough(),
 
+  flow_create_project: z.object({
+    name: z.string().trim().min(1).max(200).optional().describe('Name for the brand-new project (never reuses/renames an existing one).'),
+    campaign: z.string().trim().max(200).optional(),
+  }).passthrough(),
+
+  flow_list_browser_targets: z.object({}).passthrough(),
+
+  flow_list_projects: z.object({}).passthrough(),
+
+  flow_generate_confirm: z.object({
+    job_id: z.string().trim().min(1).max(64).optional().describe('Prepared ready_for_confirmation job to live-click Generate for.'),
+    jobId: z.string().trim().min(1).max(64).optional(),
+    max_credits: z.number().min(0).max(1000).optional().default(2).describe('Spend ceiling; quoted cost above this refuses (images ~0, Omni cheap, Veo ~20).'),
+    wait_ms: z.number().int().min(15000).max(600000).optional().default(120000).describe('Post-click poll wait.'),
+  }).passthrough().refine((v) => (v.job_id && v.job_id.trim()) || (v.jobId && v.jobId.trim()),
+    { message: 'job_id is required', path: ['job_id'] }),
+
+  flow_rename_character: z.object({
+    name: z.string().trim().min(1).max(200).optional().describe('Current character name as shown on its card.'),
+    character_id: z.string().trim().min(1).max(200).optional(),
+    new_name: nonEmpty('new_name'),
+    project_name: z.string().trim().max(200).optional(),
+    campaign: z.string().trim().max(200).optional(),
+    project_url: z.string().trim().max(2000).optional(),
+  }).passthrough().refine((v) => (v.name && v.name.trim()) || (v.character_id && v.character_id.trim()),
+    { message: 'name (or character_id) is required', path: ['name'] }),
+
   flow_story_create: z.object({
     storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'storyId must be a valid identifier').optional(),
     brief: z.record(z.string(), z.any()),
@@ -191,9 +224,25 @@ export const schemas = {
     nodeId: z.string().trim().min(1, 'nodeId is required'),
     nodeDigest: z.string().trim().min(1, 'nodeDigest is required'),
     reviewer: z.string().trim().min(1, 'reviewer is required'),
-    decision: z.enum(['approve', 'reject', 'revise', 'reset']),
+    decision: z.enum(['approve', 'reject', 'revise', 'reset']).optional(),
     notes: z.string().optional(),
-  }).passthrough(),
+    action: z.enum(['score_candidate', 'select_reference', 'reference_pack']).optional(),
+    candidateId: exactId('candidateId', 64).optional(),
+    candidateHash: exactId('candidateHash', 256).optional(),
+    expectedReferenceRevision: z.number().int().min(0).optional(),
+    expectedPackRevision: z.number().int().min(0).optional(),
+    reason: z.string().trim().min(1).max(2000).optional(),
+    gates: z.record(z.string(), z.any()).optional(),
+    ratings: z.record(z.string(), z.any()).optional(),
+    confidences: z.record(z.string(), z.any()).optional(),
+    rubricVersion: z.string().trim().min(1).max(100).optional(),
+    weights: z.record(z.string(), z.any()).optional(),
+    consideredCandidateIds: z.array(z.string().min(1).max(64)).max(20).optional(),
+  }).passthrough().superRefine((v, ctx) => {
+    if (!v.action && v.decision === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'decision is required when no W09 action is given', path: ['decision'] });
+    }
+  }),
 
   flow_script_create: z.object({
     scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptId must be a valid identifier').optional(),
@@ -228,8 +277,80 @@ export const schemas = {
     nodeId: z.string().trim().min(1, 'nodeId is required'),
     nodeDigest: z.string().trim().min(1, 'nodeDigest is required'),
     reviewer: z.string().trim().min(1, 'reviewer is required'),
-    decision: z.enum(['approve', 'reject', 'revise', 'reset']),
+    decision: z.enum(['approve', 'reject', 'revise', 'reset']).optional(),
     notes: z.string().optional(),
+    action: z.enum(['score_candidate', 'select_reference', 'reference_pack']).optional(),
+    candidateId: exactId('candidateId', 64).optional(),
+    candidateHash: exactId('candidateHash', 256).optional(),
+    expectedReferenceRevision: z.number().int().min(0).optional(),
+    expectedPackRevision: z.number().int().min(0).optional(),
+    reason: z.string().trim().min(1).max(2000).optional(),
+    gates: z.record(z.string(), z.any()).optional(),
+    ratings: z.record(z.string(), z.any()).optional(),
+    confidences: z.record(z.string(), z.any()).optional(),
+    rubricVersion: z.string().trim().min(1).max(100).optional(),
+    weights: z.record(z.string(), z.any()).optional(),
+    consideredCandidateIds: z.array(z.string().min(1).max(64)).max(20).optional(),
+  }).passthrough().superRefine((v, ctx) => {
+    // Conditional review contract (no parity exception): legacy no-action
+    // review still requires a decision; typed W09 actions use reviewer/reason
+    // instead of decision.
+    if (!v.action && v.decision === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'decision is required when no W09 action is given', path: ['decision'] });
+    }
+  }),
+
+  flow_script_run: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    expectedRevision: z.number().int().min(1),
+    stage: z.enum(['references', 'image-candidates', 'review-artifacts']),
+    nodeId: exactId('nodeId', 128),
+    nodeDigest: exactId('nodeDigest', 256),
+    model: exactId('model', 100),
+    ratio: z.enum(VALID_ASPECT_RATIOS),
+    quantity: z.number().int().min(1).max(4),
+    candidateLimit: z.number().int().min(1),
+    timeBudgetSec: z.number().finite().positive(),
+    source: z.enum(['local_import']).optional(),
+    files: z.array(z.object({
+      path: z.string().min(1).max(2048),
+      rights: z.enum(['owned', 'licensed', 'synthetic', 'fair_use']),
+      rightsNote: z.string().max(500).optional(),
+    }).passthrough()).max(4).optional(),
+    minWidth: z.number().int().min(1).optional(),
+    minHeight: z.number().int().min(1).optional(),
+    jobId: exactId('jobId', 64).optional(),
+  }).passthrough(),
+  flow_story_run: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    expectedRevision: z.number().int().min(1),
+    stage: z.enum(['references', 'image-candidates', 'review-artifacts']),
+    nodeId: exactId('nodeId', 128),
+    nodeDigest: exactId('nodeDigest', 256),
+    model: exactId('model', 100),
+    ratio: z.enum(VALID_ASPECT_RATIOS),
+    quantity: z.number().int().min(1).max(4),
+    candidateLimit: z.number().int().min(1),
+    timeBudgetSec: z.number().finite().positive(),
+    source: z.enum(['local_import']).optional(),
+    files: z.array(z.object({
+      path: z.string().min(1).max(2048),
+      rights: z.enum(['owned', 'licensed', 'synthetic', 'fair_use']),
+      rightsNote: z.string().max(500).optional(),
+    }).passthrough()).max(4).optional(),
+    minWidth: z.number().int().min(1).optional(),
+    minHeight: z.number().int().min(1).optional(),
+    jobId: exactId('jobId', 64).optional(),
+  }).passthrough(),
+  flow_script_resume: z.object({
+    scriptId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    jobId: exactId('jobId', 64),
+    expectedRevision: z.number().int().min(1),
+  }).passthrough(),
+  flow_story_resume: z.object({
+    storyId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    jobId: exactId('jobId', 64),
+    expectedRevision: z.number().int().min(1),
   }).passthrough(),
 };
 

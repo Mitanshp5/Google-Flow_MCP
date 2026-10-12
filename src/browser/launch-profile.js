@@ -9,7 +9,7 @@ import { getDefaultChromePath, getChromeProfileSourcePath } from '../utils/platf
 import { checkHeadlessOption, selectFlowTab } from './session.js';
 import { getUiLease, assertUiCurrent } from './ui-transaction.js';
 
-export async function launchKiaraProfile(headless = false) {
+export async function launchKiaraProfile(headless = false, opts = {}) {
   const epoch = getUiLease().getEpoch();
   assertUiCurrent(epoch);
   if (isBrowserConnected()) {
@@ -17,7 +17,7 @@ export async function launchKiaraProfile(headless = false) {
     return { success: true, message: 'Already connected' };
   }
 
-  const cdpPort = get('cdpPort', 9222);
+  const cdpPort = Number(opts?.cdpPort) || get('cdpPort', 9222);
   const chromePath = get('chromeExecutable') || getDefaultChromePath();
   const profileName = get('chromeProfile', 'Default');
   const profileSource = (get('chromeUserDataDir') && path.join(get('chromeUserDataDir'), profileName))

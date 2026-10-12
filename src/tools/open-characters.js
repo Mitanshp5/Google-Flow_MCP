@@ -53,7 +53,8 @@ export async function handleOpenCharacters(args = {}) {
   const screenshot = await takeScreenshot(page, 'characters-page');
 
   const feature = await page.getByRole('heading', { name: /^characters?$/i }).first().isVisible().catch(() => false)
-    || await page.locator('[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]').first().isVisible().catch(() => false);
+    || await page.locator('[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]').first().isVisible().catch(() => false)
+    || /build and reuse characters|the eccentric|the professional|the wildcard|the familiar|the wicked|the fantastical/i.test(bodyText);
   if (!feature) {
     return { status: 'blocked', reason: 'character_feature_unverified', url: currentUrl,
       message: 'Character feature identity could not be verified.', elements, screenshot };

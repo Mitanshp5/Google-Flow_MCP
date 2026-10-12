@@ -58,12 +58,13 @@ describe('w00 import lifecycle uses actual exports', () => {
     expect(Array.isArray(TOOL_DEFINITIONS)).toBe(true);
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual([
       'flow_account_check', 'flow_connect', 'flow_create_character',
-      'flow_create_scene', 'flow_discover_ui', 'flow_disconnect',
-      'flow_download_latest', 'flow_generate_image', 'flow_generate_video',
-      'flow_import_character', 'flow_list_mention_options', 'flow_list_models',
-      'flow_open', 'flow_open_characters', 'flow_open_tools_gallery',
-      'flow_queue_reset', 'flow_queue_status', 'flow_screenshot',
+      'flow_create_project', 'flow_create_scene', 'flow_discover_ui', 'flow_disconnect',
+      'flow_download_latest', 'flow_generate_confirm', 'flow_generate_image', 'flow_generate_video',
+      'flow_import_character', 'flow_list_browser_targets', 'flow_list_mention_options', 'flow_list_models',
+      'flow_list_projects', 'flow_open', 'flow_open_characters', 'flow_open_tools_gallery',
+      'flow_queue_reset', 'flow_queue_status', 'flow_rename_character', 'flow_screenshot',
       'flow_script_create', 'flow_script_review', 'flow_script_status',
+      'flow_script_run', 'flow_script_resume',
       'flow_script_update', 'flow_status', 'flow_use_grid_architect',
       'flow_use_tool',
     ].sort());
@@ -97,6 +98,8 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     ['flow_use_tool', {}],
     ['flow_screenshot', { name: '' }],
     ['flow_queue_status', { history_limit: 0 }],
+    ['flow_generate_confirm', {}],
+    ['flow_rename_character', {}],
   ])('%s rejects invalid args with INVALID_PARAMS (never launches/touches browser)', async (name, args) => {
     await expectFlowError(handleToolCall(name, args), 'INVALID_PARAMS');
   });
@@ -117,6 +120,7 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     ['flow_use_grid_architect', { theme_prompt: 'x' }],
     ['flow_use_tool', { tool_name: 'Grid Architect' }],
     ['flow_screenshot', { name: 'w00' }],
+    ['flow_create_project', { name: 'w00 probe' }],
   ])('%s with valid args fails closed BROWSER_NOT_CONNECTED (no navigation)', async (name, args) => {
     await expectFlowError(handleToolCall(name, args), 'BROWSER_NOT_CONNECTED');
   });
@@ -134,6 +138,15 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     const body = parsed(await handleToolCall('flow_list_models', {}));
     expect(['cache', 'fallback']).toContain(body.source);
     expect(Array.isArray(body.videoModels)).toBe(true);
+  });
+
+  it('flow_list_browser_targets/flow_list_projects succeed with no browser', async () => {
+    const targets = parsed(await handleToolCall('flow_list_browser_targets', {}));
+    expect(targets.status).toBe('success');
+    expect(Array.isArray(targets.targets)).toBe(true);
+    const projects = parsed(await handleToolCall('flow_list_projects', {}));
+    expect(projects.status).toBe('success');
+    expect(Array.isArray(projects.projects)).toBe(true);
   });
 
   it('flow_queue_status/reset + flow_disconnect succeed with no browser', async () => {
@@ -258,7 +271,12 @@ const SCHEMA_FOR_TOOL = {
   flow_generate_image: 'flow_generate_image',
   flow_generate_video: 'flow_generate_video',
   flow_create_character: 'flow_create_character',
+  flow_create_project: 'flow_create_project',
+  flow_generate_confirm: 'flow_generate_confirm',
+  flow_rename_character: 'flow_rename_character',
   flow_import_character: 'flow_import_character',
+  flow_list_browser_targets: 'flow_list_browser_targets',
+  flow_list_projects: 'flow_list_projects',
   flow_open_characters: 'project_scoped',
   flow_list_mention_options: 'project_scoped',
   flow_create_scene: 'flow_create_scene',
@@ -270,6 +288,8 @@ const SCHEMA_FOR_TOOL = {
   flow_script_update: 'flow_script_update',
   flow_script_status: 'flow_script_status',
   flow_script_review: 'flow_script_review',
+  flow_script_run: 'flow_script_run',
+  flow_script_resume: 'flow_script_resume',
 };
 const NO_SCHEMA_TOOLS = [
   'flow_disconnect', 'flow_status', 'flow_account_check', 'flow_list_models',
@@ -280,9 +300,17 @@ const NO_SCHEMA_TOOLS = [
 // asserted: every observed gap must be listed, every listing observed.
 // Each entry below was verified against TOOL_DEFINITIONS in src/index.js
 // and the zod schemas in src/utils/validate.js on this snapshot.
+// W09 conditional review contract: flow_script_review decision is
+// advertised-optional and zod-optional; runtime/zod superRefine requires it
+// only for legacy no-action review, while typed W09 actions
+// (score_candidate/select_reference/reference_pack) use reviewer/reason.
+// No parity exception is registered for this intentional conditional.
 const W06_MISMATCHES = [
   'flow_create_character: zod field \'model\' not advertised',
   'flow_create_character: zod field \'reference_image\' not advertised',
+  'flow_generate_confirm: advertised-required \'job_id\' is zod-optional',
+  'flow_generate_confirm: zod field \'jobId\' not advertised',
+  'flow_rename_character: zod field \'character_id\' not advertised',
   'flow_create_scene: advertised-required \'prompt\' is zod-optional',
   'flow_create_scene: zod field \'description\' not advertised',
   'flow_discover_ui: zod field \'waitFor\' not advertised',

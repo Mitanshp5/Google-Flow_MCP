@@ -136,7 +136,24 @@ export async function handleListMentionOptions(args = {}, deps = {}) {
     };
   }
   // Changed prepared state invalidates even a successful read: no success
-  // with text-only preservation.
+  // with text-only preservation — unless only plain text was prepared (no
+  // chips/slots/uploads) and it can be restored verbatim, re-verified below.
+  if (hadPrepared && richChanged && before && after) {
+    const noRefs = (s) => (!s || ((s.chips || []).length === 0 && Object.keys(s.slots || {}).length === 0 && (s.pendingUploads || []).length === 0));
+    if (noRefs(before) && noRefs(after) && typeof before.text === 'string' && before.text.trim()) {
+      try {
+        await promptInput.click().catch(() => {});
+        await promptInput.fill('').catch(() => {});
+        await promptInput.type(before.text.slice(0, 8000), { delay: 1 }).catch(() => {});
+        await page.waitForTimeout(400);
+        const reread = await readComposerSnapshot(page, promptInput).catch(() => null);
+        if (reread && (reread.text || '').replace(/\s+/g, ' ').trim() === before.text.replace(/\s+/g, ' ').trim()) {
+          composer = { state: 'restored', comparison: compareComposerSnapshots(before, reread) };
+          richChanged = false;
+        }
+      } catch { /* fall through to blocked */ }
+    }
+  }
   if (hadPrepared && richChanged) {
     return {
       status: 'blocked',

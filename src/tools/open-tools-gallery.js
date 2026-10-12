@@ -17,8 +17,8 @@ export async function handleOpenToolsGallery() {
   const elements = await detectPageElements(page);
   const screenshot = await takeScreenshot(page, 'tools-section');
 
-  // F01/F03: Reject if sidebar navigation failed or UI remains in All media
-  if (!nav.ok || (active && active.toLowerCase().includes('media'))) {
+  // navigateToSidebar returns a boolean, not an object with .ok.
+  if (!nav || (active && active.toLowerCase().includes('media'))) {
     return {
       status: 'blocked',
       reason: 'tools_gallery_not_opened',
@@ -47,7 +47,7 @@ export async function handleListTools() {
   const active = await getActiveSidebarSection(page);
   const elements = await detectPageElements(page);
 
-  if (!nav.ok || (active && active.toLowerCase().includes('media'))) {
+  if (!nav || (active && active.toLowerCase().includes('media'))) {
     return {
       status: 'blocked',
       reason: 'tools_not_found',

@@ -33,6 +33,19 @@ AUDIT_LOG.untracked.md
 /char-test.json
 /continuation-prompt.txt
 /gate-a-continuation-prompt.txt
+# Session test notes (local reference only)
+/MCP-GAPS-ponytail-test.md
+/real-flow-tool-verification-handoff.txt
+/w09-continuation-prompt.txt
+/w10-hermes-verification-prompt.txt
+/w10-opencode-continuation-prompt.txt
+
+# Runtime script-revision storage (local run state, like outputs/);
+# top-level dispatcher scripts stay committable
+scripts/*/
+
+# Local agent tooling install (skills/commands resolve from the live env)
+/.opencode/
 
 # Local environment overrides; retain distributable templates
 /.env.*

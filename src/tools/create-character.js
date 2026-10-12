@@ -80,13 +80,34 @@ export async function handleCreateCharacter(args) {
 
     await takeScreenshot(page, 'characters-section');
 
+    // Optional archetype starter (The Eccentric, The Professional,
+    // The Wildcard, The Familiar, The Wicked, The Fantastical). Clicks the
+    // exact card when visible, otherwise continues to the scratch composer.
+    if (typeof args.archetype === 'string' && args.archetype.trim()) {
+      const card = page.locator('button').filter({ hasText: args.archetype.trim() }).first();
+      if (await card.isVisible().catch(() => false)) {
+        await card.click().catch(() => {});
+        await page.waitForTimeout(2000);
+        logger.info('Archetype selected', { archetype: args.archetype.trim() });
+      } else {
+        logger.warn('Archetype card not visible, using scratch composer', { archetype: args.archetype.trim() });
+      }
+    }
+
     // F03: Require feature-specific character form evidence.
     // The ordinary prompt bar or generic contenteditable alone is NOT proof of a character form!
+    // Live UI keeps "Describe your character..." as text while the editable
+    // is an inner contenteditable — probe the real editables, not just placeholder attrs.
     const onCreateForm = await page.locator(
       '[placeholder*="Describe your character" i], ' +
       '[data-placeholder*="Describe your character" i], ' +
       '[aria-label*="Describe your character" i]'
-    ).first().isVisible().catch(() => false);
+    ).first().isVisible().catch(() => false)
+      || await page.evaluate(() => {
+        const bar = [...document.querySelectorAll('div')].find(d =>
+          /describe your character/i.test(d.textContent || '') && d.querySelector('[contenteditable="true"], textarea, [role="textbox"]'));
+        return !!bar;
+      }).catch(() => false);
 
     if (!onCreateForm) {
       // Look for a button to open the "New character" creation form
@@ -159,12 +180,16 @@ export async function handleCreateCharacter(args) {
       });
     }
 
-    // Fill character description into character-specific input ONLY
+    // Fill character description into character-specific input ONLY.
+    // The editable is an inner contenteditable inside the composer box.
     const descCandidates = [
       page.locator('[placeholder*="Describe your character" i]').first(),
       page.locator('[data-placeholder*="Describe your character" i]').first(),
       page.locator('[aria-label*="Describe your character" i]').first(),
       page.locator('form [placeholder*="Describe" i]').first(),
+      page.locator('[contenteditable="true"]').first(),
+      page.locator('textarea').first(),
+      page.locator('[role="textbox"]').first(),
     ];
     let descLocator = null;
     for (const candidate of descCandidates) {
@@ -248,6 +273,7 @@ export async function handleCreateCharacter(args) {
       jobQueue.completeJob(job.id, {
         status: 'ready_for_confirmation',
         type: 'character',
+        jobId: job.id,
         description: args.description,
         message: 'Character setup complete. Manual confirmation needed to create.',
         screenshot: await takeScreenshot(page, 'character-ready'),

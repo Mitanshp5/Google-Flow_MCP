@@ -716,44 +716,183 @@ function touchProject(urlProjectId) {
  * sections: "Characters", "Scenes", "Tools", "Trash"
  * Returns true if navigation succeeded, false otherwise.
  */
-export async function navigateToSidebar(page, section) {
-  const detailed = await navigateSidebarDetailed(page, section);
+export async function navigateToSidebar(page, section, opts = {}) {
+  const detailed = await navigateSidebarDetailed(page, section, opts);
   return detailed.ok;
 }
 
 // Scoped sidebar roots only. There is deliberately NO document-wide generic
 // fallback: a similarly named tile elsewhere in the page (gallery, dialogs)
 // must never be clicked as if it were sidebar navigation.
+// Live root is mat-nav-list[role=navigation] under mat-sidenav.project-sidenav;
+// legacy HTML nav / *sidebar* scopes are preserved for old fixtures.
 const SIDEBAR_SCOPES = [
+  'mat-sidenav.project-sidenav mat-nav-list[role="navigation"] mat-list-item, mat-sidenav.project-sidenav mat-nav-list[role="navigation"] a',
+  'mat-nav-list[role="navigation"] mat-list-item, mat-nav-list[role="navigation"] a',
+  'mat-sidenav.project-sidenav mat-list-item, mat-sidenav.project-sidenav a',
   '[class*="sidebar"] button, [class*="sidebar"] a, [class*="sidebar"] mat-list-item, [class*="sidebar"] [role="listitem"]',
   'nav button, nav a, nav mat-list-item, nav [role="listitem"]',
-  '[class*="nav"] button, [class*="nav"] a, [class*="nav"] mat-list-item',
 ];
+
+// Click eligibility: positive enabled evidence only. Native disabled
+// attribute/property counts alongside aria-disabled; unreadable eligibility
+// fails closed (never clicked).
+async function isClickEligible(handle) {
+  try {
+    let aria = null;
+    let attr = null;
+    let prop = null;
+    let unreadable = false;
+    try { aria = await handle.getAttribute('aria-disabled'); }
+    catch { unreadable = true; }
+    try { attr = await handle.getAttribute('disabled'); }
+    catch { unreadable = true; }
+    try {
+      prop = await handle.evaluate((el) => {
+        try { return el.disabled === true; }
+        catch { return 'unknown'; }
+      });
+    } catch { unreadable = true; }
+    if (prop === 'unknown') unreadable = true;
+    if (unreadable) return false;
+    if (aria === 'true') return false;
+    if (attr !== null && attr !== undefined) return false;
+    if (prop === true) return false;
+    return true;
+  } catch { return false; }
+}
+
+// Owning label for a sidebar item: the dedicated title span avoids icon
+// ligature pollution (dashboard, accessibility_new, apps_spark_2).
+async function readCandidateLabel(handle) {
+  try {
+    const owning = handle.locator('span[matlistitemtitle], .mdc-list-item__primary-text').first();
+    const t = await owning.textContent({ timeout: 500 }).catch(() => null);
+    if (t && String(t).trim()) return String(t);
+  } catch { /* fall through to whole-item text */ }
+  try {
+    return (await handle.textContent()) || '';
+  } catch { return ''; }
+}
+
+// One shared scoped DOM fact collector for sidebar selection. Serves
+// readSidebarEvidence, getActiveSidebarSection and the navigate read-back:
+// exactly one visible, enabled, owned item marked by exactly one selection
+// channel (exact mdc-list-item--activated token, legacy aria, legacy exact
+// active/selected/current tokens). Anything else — no owning scope, hidden,
+// disabled, unlabelled, multiple or contradictory selections — is unknown
+// (null), never fail-open. Owning label is span[matlistitemtitle] /
+// .mdc-list-item__primary-text, avoiding icon ligature pollution.
+async function collectSidebarFacts(page) {
+  const res = await page.evaluate(() => {
+    const labelOf = (el) => {
+      try {
+        const owning = el.querySelector('span[matlistitemtitle], .mdc-list-item__primary-text');
+        const t = owning ? owning.textContent : el.textContent;
+        const s = ((t || '').trim().slice(0, 120));
+        return s || null;
+      } catch { return null; }
+    };
+    const isVisible = (el) => {
+      try {
+        if (!el || el.nodeType !== 1) return false;
+        if (el.hasAttribute('hidden')) return false;
+        if (el.getAttribute('aria-hidden') === 'true') return false;
+        const cs = window.getComputedStyle(el);
+        if (!cs) return false;
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
+        const r = el.getBoundingClientRect();
+        if (!r || r.width <= 0 || r.height <= 0) return false;
+        return true;
+      } catch { return false; }
+    };
+    const isDisabled = (el) => {
+      try {
+        if (el.getAttribute('aria-disabled') === 'true') return true;
+        if (el.hasAttribute('disabled')) return true;
+        return false;
+      } catch { return true; }
+    };
+    const inOwningScope = (el) => {
+      try {
+        if (!el || !el.closest) return false;
+        return !!el.closest('mat-nav-list[role="navigation"], mat-sidenav.project-sidenav, [class*="sidebar"], nav');
+      } catch { return false; }
+    };
+    const markedBy = (el) => {
+      try {
+        const cls = el.classList;
+        if (cls && cls.contains('mdc-list-item--activated')) return 'activated';
+      } catch { /* unmarked on unreadable classes */ }
+      try {
+        if (el.matches && (el.matches('[aria-current="page"]') || el.matches('[aria-selected="true"]'))) return 'aria';
+      } catch { /* unmarked */ }
+      try {
+        const cls = el.classList;
+        if (cls && (cls.contains('active') || cls.contains('selected') || cls.contains('current'))) return 'legacy';
+      } catch { /* unmarked */ }
+      return null;
+    };
+    const headingEl = document.querySelector('h1');
+    const base = {
+      heading: headingEl ? ((headingEl.textContent || '').trim().slice(0, 120)) : null,
+      hash: window.location.hash || null,
+      url: window.location.href,
+      title: document.title || '',
+    };
+    let scopeRoots = [];
+    try {
+      scopeRoots = Array.from(document.querySelectorAll(
+        'mat-sidenav.project-sidenav mat-nav-list[role="navigation"], mat-nav-list[role="navigation"], mat-sidenav.project-sidenav, [class*="sidebar"], nav'
+      ));
+    } catch { return { ...base, items: [], selected: null }; }
+    if (scopeRoots.length === 0) return { ...base, items: [], selected: null };
+    const seen = new Set();
+    const items = [];
+    for (const root of scopeRoots) {
+      let nodes = [];
+      try {
+        nodes = Array.from(root.querySelectorAll('mat-list-item, a, button, li, [role="listitem"]'));
+      } catch { continue; }
+      for (const el of nodes) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        if (!inOwningScope(el)) continue;
+        if (!isVisible(el)) continue;
+        const disabled = isDisabled(el);
+        const channel = markedBy(el);
+        items.push({ label: labelOf(el), marked: !!channel, disabled });
+      }
+    }
+    // Count ALL enabled marked owning items before deriving any label, so
+    // an unlabelled marked item keeps the whole selection unknown.
+    const markedEnabled = items.filter((it) => it.marked && !it.disabled);
+    const selected = markedEnabled.length === 1 ? (markedEnabled[0].label || null) : null;
+    return { ...base, items, selected };
+  });
+  // Legacy mock-page shape (existing unit tests script evaluate to a plain
+  // label string): treat it as the selected label, never as item facts.
+  if (typeof res === 'string') {
+    return { items: [], selected: res || null, heading: null, hash: null, url: null, title: '' };
+  }
+  return res;
+}
 
 // Raw selection facts from the live DOM. The evaluate callback returns facts
 // only (no matching logic), so tests exercise the real DOM, not a mock.
 export async function readSidebarEvidence(page) {
   try {
-    return await page.evaluate(() => {
-      const scopeRoots = Array.from(document.querySelectorAll('[class*="sidebar"], nav'));
-      const roots = scopeRoots.length > 0 ? scopeRoots : [document];
-      let selected = null;
-      for (const root of roots) {
-        const el = root.querySelector('[aria-current="page"], [aria-selected="true"]');
-        if (el) {
-          selected = ((el.textContent || '').trim().slice(0, 120));
-          break;
-        }
-      }
-      const headingEl = document.querySelector('h1');
-      return {
-        selected,
-        heading: headingEl ? ((headingEl.textContent || '').trim().slice(0, 120)) : null,
-        hash: window.location.hash || null,
-        url: window.location.href,
-        title: document.title || '',
-      };
-    });
+    const facts = await collectSidebarFacts(page);
+    if (!facts || typeof facts !== 'object') return null;
+    let pageUrl = null;
+    try { pageUrl = page.url(); } catch { pageUrl = null; }
+    return {
+      selected: facts.selected ?? null,
+      heading: facts.heading ?? null,
+      hash: facts.hash ?? null,
+      url: facts.url || pageUrl,
+      title: facts.title || '',
+    };
   } catch {
     return null;
   }
@@ -790,17 +929,43 @@ async function readSidebarAppState(page) {
 // Failed nav yields { ok:false, blocker } — callers must block, never report valid.
 //
 // Matching enumerates scoped sidebar candidates and compares NORMALIZED
-// labels exactly (icon ligatures stripped, glued or spaced). Raw-text
-// pre-filtering is what missed the actual `apps_spark_2Tools` anchor.
-// Verification requires the selected item (aria-current/selected) to match
-// plus usable app state — never a classname substring (`inactive` contains
-// `active`) and never a document-generic tile click.
+// owning labels exactly (span[matlistitemtitle] avoids icon ligatures;
+// whole-item text is the legacy fallback). Glued `apps_spark_2Tools` still
+// normalizes via the shared adapter.
+// Verification requires the selected item (exact mdc-list-item--activated
+// token, legacy aria fallback) to match plus usable app state — never a
+// classname substring (`inactive` contains `active`) and never a
+// document-generic tile click.
 export async function navigateSidebarDetailed(page, section, opts = {}) {
   logger.info('Navigating to sidebar section', { section });
   const want = String(section || '').trim().toLowerCase();
   if (!want) return { ok: false, active: null, blocker: 'sidebar-nav-blocked: empty section' };
   const lease = getUiLease();
   const epoch = opts.epoch ?? lease.getEpoch();
+  const norm = (s) => {
+    try { return normalizeSidebarLabel(s).toLowerCase(); }
+    catch { return String(s || '').trim().toLowerCase(); }
+  };
+
+  // Shared fact census first: deny ambiguity before any click. Multiple
+  // distinct visible owning controls with the requested label must never
+  // resolve to an arbitrary first click.
+  let censusItems = null;
+  let censusSelected = null;
+  try {
+    const facts = await collectSidebarFacts(page);
+    censusItems = Array.isArray(facts?.items) ? facts.items : null;
+    censusSelected = facts?.selected ?? null;
+  } catch { censusItems = null; }
+  if (!censusItems) {
+    logger.warn('Sidebar evidence unreadable before click', { section });
+    return { ok: false, active: null, blocker: `sidebar-nav-blocked: section "${section}" not found or not verified` };
+  }
+  const usableMatches = censusItems.filter((it) => it && !it.disabled && it.label && norm(it.label) === want);
+  if (usableMatches.length > 1) {
+    const current = censusSelected ? norm(censusSelected) : null;
+    return { ok: false, active: current, blocker: `sidebar-nav-blocked: ambiguous sidebar selection for "${section}" (${usableMatches.length} visible owning controls)` };
+  }
 
   for (const sel of SIDEBAR_SCOPES) {
     let handles = [];
@@ -811,16 +976,14 @@ export async function navigateSidebarDetailed(page, section, opts = {}) {
       continue;
     }
     for (const handle of handles) {
-      let raw = '';
-      try {
-        raw = (await handle.textContent()) || '';
-      } catch { continue; }
-      if (normalizeSidebarLabel(raw).toLowerCase() !== want) continue;
+      const raw = await readCandidateLabel(handle);
+      if (!raw || normalizeSidebarLabel(raw).toLowerCase() !== want) continue;
       let visible = false;
       try {
         visible = await handle.isVisible().catch(() => false);
       } catch { continue; }
       if (!visible) continue;
+      if (!(await isClickEligible(handle))) continue;
       // Lease checkpoint immediately before the consequential click.
       if (!lease.checkpoint(epoch)) {
         return { ok: false, active: null, blocker: 'sidebar-nav-blocked: ui lease stale before click' };
@@ -878,33 +1041,8 @@ export async function navigateSidebarDetailed(page, section, opts = {}) {
  */
 export async function getActiveSidebarSection(page) {
   try {
-    const section = await page.evaluate(() => {
-      // Authoritative selection evidence first: aria-current/aria-selected.
-      // Class matching uses whole class tokens (`inactive` must NOT match).
-      const byAria = (root) => {
-        const el = root.querySelector('[aria-current="page"], [aria-selected="true"]');
-        return el ? (el.textContent || '').trim() : null;
-      };
-      const byToken = (root) => {
-        const els = root.querySelectorAll('[class]');
-        for (const el of els) {
-          try {
-            const cls = el.classList;
-            if (cls && (cls.contains('active') || cls.contains('selected') || cls.contains('current'))) {
-              return (el.textContent || '').trim();
-            }
-          } catch { /* ignore */ }
-        }
-        return null;
-      };
-      const scopes = Array.from(document.querySelectorAll('[class*="sidebar"], nav'));
-      for (const scope of scopes) {
-        const hit = byAria(scope) || byToken(scope);
-        if (hit) return hit;
-      }
-      // Document-level aria fallback only — never a class-substring scan.
-      return byAria(document);
-    });
+    const evidence = await readSidebarEvidence(page);
+    const section = evidence?.selected ?? null;
     if (!section) return null;
     try {
       return normalizeSidebarLabel(section);

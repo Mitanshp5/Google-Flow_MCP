@@ -77,4 +77,26 @@ describe('W04 behavioral list pre-navigation snapshot', () => {
       await page.close();
     }
   }, 25000);
+
+  it('plain-text preparation wiped by listing is restored verbatim, not blocked', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(LIST_FIXTURE.replace(/<div id="chips">[\s\S]*?<\/div>/, '<div id="chips"></div>')
+        .replace(/<div id="slots">[\s\S]*?<\/div><\/div>/, '<div id="slots"></div></div>'));
+      const wipeText = async () => {
+        await page.evaluate(() => { document.getElementById('prompt').textContent = ''; });
+      };
+      const res = await handleListMentionOptions({}, {
+        page,
+        ensureProjectFn: wipeText,
+        takeScreenshotFn: async () => null,
+      });
+      expect(res.status).toBe('success');
+      expect(res.composer.state).toBe('restored');
+      expect(res.references).toContain('qa-reference.png');
+      expect(await page.locator('#prompt').textContent()).toBe('prepared prompt');
+    } finally {
+      await page.close();
+    }
+  }, 25000);
 });

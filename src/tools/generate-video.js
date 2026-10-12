@@ -514,6 +514,7 @@ export async function handleGenerateVideo(args) {
     jobQueue.completeJob(job.id, {
       status: settingsVerification.verified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
+      jobId: job.id,
       account: get('expectedAccount'),
       model_used: model,
       ratio,

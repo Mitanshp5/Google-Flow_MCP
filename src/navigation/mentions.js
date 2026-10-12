@@ -58,7 +58,10 @@ export function isExactRowMatch(rowText, requested) {
   const row = normalizeTitle(stripTypeLabelSuffix(String(rowText ?? ''))).toLowerCase();
   const want = normalizeTitle(requested).toLowerCase();
   if (!row || !want) return false;
-  return row === want;
+  if (row === want) return true;
+  // Wrapped titles can break mid-word across lines ("Bob the astr\naut"):
+  // spaceless full-string equality still proves identity, never a prefix.
+  return row.replace(/\s+/g, '') === want.replace(/\s+/g, '');
 }
 
 // W04: insert verification with no first-word fallback. Verified only when
@@ -278,7 +281,7 @@ export async function listMentionOptionsDetailed(page, inputLocator) {
     return [];
   }, RESULT_ITEM_SELECTORS);
 
-  const names = rawNames.map(stripTypeLabelSuffix).filter(Boolean);
+  const names = rawNames.map((t) => stripTypeLabelSuffix(normalizeTitle(t))).filter(Boolean);
 
   await closeMentionPopup(page, inputLocator, popup.triggerDelta || '@');
   if (names.length === 0) return { status: 'empty', names, reason: 'picker opened with no rows' };

@@ -29,6 +29,12 @@ describe('W04 mentions exact row match', () => {
     expect(isExactRowMatch('Cow in', 'Cow in space')).toBe(false);
     expect(isExactRowMatch('Cow in space suit', 'Cow in space')).toBe(false);
   });
+  it('line-wrapped titles match (block breaks and suffix wraps)', () => {
+    expect(isExactRowMatch('Bob the\nastronautCharacter', 'Bob the Astronaut')).toBe(true);
+    expect(isExactRowMatch('Bob the astronaut\nCharacter', 'Bob the Astronaut')).toBe(true);
+    expect(isExactRowMatch('Bob the astronaut', 'Bob the Astronaut')).toBe(true);
+    expect(isExactRowMatch('Bob the cosmonaut', 'Bob the Astronaut')).toBe(false);
+  });
 });
 
 describe('W04 mentions insert verification has no first-word fallback', () => {

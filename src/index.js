@@ -14,6 +14,11 @@ import { getPage, setBrowser, closeBrowser as closeBrowserConnection } from './b
 import { verifyAccount as checkAccount } from './browser/account-check.js';
 import { handleFlowOpen } from './tools/flow-open.js';
 import { handleFlowStatus } from './tools/flow-status.js';
+import { handleCreateProject } from './tools/create-project.js';
+import { handleListBrowserTargets } from './tools/list-browser-targets.js';
+import { handleListProjects } from './tools/list-projects.js';
+import { handleGenerateConfirm } from './tools/generate-confirm.js';
+import { handleRenameCharacter } from './tools/rename-character.js';
 import { handleGenerateImage } from './tools/generate-image.js';
 import { handleGenerateVideo } from './tools/generate-video.js';
 import { handleDownloadLatest } from './tools/download-latest.js';
@@ -30,6 +35,8 @@ import { handleScriptCreate } from './tools/script-create.js';
 import { handleScriptUpdate } from './tools/script-update.js';
 import { handleScriptStatus } from './tools/script-status.js';
 import { handleScriptReview } from './tools/script-review.js';
+import { handleScriptRun } from './tools/script-run.js';
+import { handleScriptResume } from './tools/script-resume.js';
 import { jobQueue } from './queue/job-queue.js';
 import { takeScreenshot } from './utils/screenshots.js';
 import { FlowError } from './utils/errors.js';
@@ -51,10 +58,60 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         headless: { type: 'boolean', description: 'Launch in headless mode (not recommended, Google Flow needs visible browser).', default: false },
-        open_flow: { type: 'boolean', description: 'Auto-navigate to Google Flow after connection.', default: true },
+          open_flow: { type: 'boolean', description: 'Auto-navigate to Google Flow after connection.', default: true },
+          cdpPort: { type: 'number', description: 'CDP port of an already-open Chrome (see flow_list_browser_targets). Defaults to config cdpPort.' },
+        },
       },
     },
-  },
+    {
+      name: 'flow_list_browser_targets',
+      description: 'Probe local Chrome CDP ports (config port plus common ones) and report which have a listening browser. No browser connection needed.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'flow_create_project',
+      description: 'Create a brand-new Flow project via the "New project" button (never reuses or renames an existing project). Pass its url as project_url afterwards to pin it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Name for the new project.' },
+          campaign: { type: 'string', description: 'Campaign identifier stored in the local registry.' },
+        },
+      },
+    },
+    {
+      name: 'flow_list_projects',
+      description: 'List known Flow projects from the local registry (name, url, campaign, last_used). No browser needed.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'flow_generate_confirm',
+      description: 'LIVE PAID CLICK for a prepared job: re-checks the quote against max_credits, clicks Generate, polls for output. Only verified ready_for_confirmation image/video/character preparations (never prepared_unverified). Explicit opt-in per call.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'Prepared ready_for_confirmation job id.' },
+          max_credits: { type: 'number', description: 'Spend ceiling (images ~0, Omni cheap, Veo ~20). Refuses above this.', default: 2 },
+          wait_ms: { type: 'number', description: 'Post-click poll wait (15000-600000).', default: 120000 },
+        },
+        required: ['job_id'],
+      },
+    },
+    {
+      name: 'flow_rename_character',
+      description: 'Rename a character inside its detail page (pencil the title, Done). Never touches the project title.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Current character name as shown on its card.' },
+          new_name: { type: 'string', description: 'New character name.' },
+          project_name: { type: 'string', description: 'Project scope.' },
+          campaign: { type: 'string', description: 'Campaign scope.' },
+          project_url: { type: 'string', description: 'Direct Flow /project/ URL (recommended pin).' },
+        },
+        required: ['new_name'],
+      },
+    },
   {
     name: 'flow_disconnect',
     description: 'Close the browser and clean up the MCP connection to Google Flow.',
@@ -174,6 +231,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         name: { type: 'string', description: 'Character name.' },
         description: { type: 'string', description: 'Character description/prompt.' },
+        archetype: { type: 'string', description: 'Starter card to pick first (The Eccentric, The Professional, The Wildcard, The Familiar, The Wicked, The Fantastical).' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to reference images for character design.' },
         project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
         campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
@@ -348,7 +406,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_script_review',
-    description: 'Submit human or director review decisions for script nodes bound to exact content digest and reviewer identity (local planning only, zero credit spend).',
+    description: 'Submit human or director review decisions for script nodes bound to exact content digest and reviewer identity (local planning only, zero credit spend). Optional action score_candidate/select_reference/reference_pack for W09 manual client review with digest-bound IDs/hashes/reviewer/reason.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -357,10 +415,60 @@ const TOOL_DEFINITIONS = [
         nodeId: { type: 'string', description: 'Target node ID (char:*, loc:*, prop:*, scene:*, shot:*).' },
         nodeDigest: { type: 'string', description: 'Digest of node content to verify against stale review.' },
         reviewer: { type: 'string', description: 'Reviewer identifier.' },
-        decision: { type: 'string', enum: ['approve', 'reject', 'revise', 'reset'], description: 'Review decision.' },
+        decision: { type: 'string', enum: ['approve', 'reject', 'revise', 'reset'], description: 'Review decision (required when no W09 action).' },
         notes: { type: 'string', description: 'Optional review notes.' },
+        action: { type: 'string', enum: ['score_candidate', 'select_reference', 'reference_pack'], description: 'Optional W09 typed review action; absent means legacy node review.' },
+        candidateId: { type: 'string', description: 'Full candidate UUID for score/select.' },
+        candidateHash: { type: 'string', description: 'Full candidate sha256 for digest binding.' },
+        expectedReferenceRevision: { type: 'number', description: 'Expected current reference revision for node (0 for first).' },
+        expectedPackRevision: { type: 'number', description: 'Expected current pack revision for shot (0 for first).' },
+        reason: { type: 'string', description: 'Client creative reason for W09 action.' },
+        gates: { type: 'object', description: 'Seven hard eligibility gates for score_candidate.' },
+        ratings: { type: 'object', description: '0..5 ratings per criterion for score_candidate.' },
+        confidences: { type: 'object', description: '0..1 confidence per criterion.' },
+        rubricVersion: { type: 'string', description: 'Rubric version for scoring.' },
+        weights: { type: 'object', description: 'Criterion weights summing to 1.' },
+        consideredCandidateIds: { type: 'array', description: 'Considered candidate set for selection.', items: { type: 'string' } },
       },
-      required: ['scriptId', 'expectedRevision', 'nodeId', 'nodeDigest', 'reviewer', 'decision'],
+      required: ['scriptId', 'expectedRevision', 'nodeId', 'nodeDigest', 'reviewer'],
+    },
+  },
+  {
+    name: 'flow_script_run',
+    description: 'Create a bounded local image-candidate intent for a script node. No browser access, remote submission or spend. Optional source local_import with explicit rights-declared files retains real immutable candidates. Stage review-artifacts with jobId produces a labelled immutable contact sheet.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Target script identifier.' },
+        expectedRevision: { type: 'number', description: 'Expected current script revision.' },
+        stage: { type: 'string', enum: ['references', 'image-candidates', 'review-artifacts'] },
+        nodeId: { type: 'string', description: 'Target char, loc, prop or shot node ID.' },
+        nodeDigest: { type: 'string', description: 'Full current node content digest.' },
+        model: { type: 'string', description: 'Exact explicit image model name; not evidence of live availability.' },
+        ratio: { type: 'string', enum: ['16:9', '9:16', '1:1', '4:3', '3:4'], description: 'Explicit image aspect ratio.' },
+        quantity: { type: 'number', description: 'Variants 1–4; must fit the candidate limit.' },
+        candidateLimit: { type: 'number', description: 'Finite decision-unit cap within the script policy.' },
+        timeBudgetSec: { type: 'number', description: 'Finite time budget within the script policy; resume cannot reset the deadline.' },
+        source: { type: 'string', enum: ['local_import'], description: 'Optional local import source; default planned prepare-only intent.' },
+        files: { type: 'array', description: 'Local import files with explicit rights; quantity must match files count <=4.', items: { type: 'object' } },
+        minWidth: { type: 'number', description: 'Minimum retained width for local import.' },
+        minHeight: { type: 'number', description: 'Minimum retained height for local import.' },
+        jobId: { type: 'string', description: 'Reserved for review-artifacts stage with existing job.' },
+      },
+      required: ['scriptId', 'expectedRevision', 'stage', 'nodeId', 'nodeDigest', 'model', 'ratio', 'quantity', 'candidateLimit', 'timeBudgetSec'],
+    },
+  },
+  {
+    name: 'flow_script_resume',
+    description: 'Reconcile a durable candidate intent after restart. Preserves deadlines and budget reservations; never submits remotely.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scriptId: { type: 'string', description: 'Target script identifier.' },
+        jobId: { type: 'string', description: 'Full candidate-job UUID.' },
+        expectedRevision: { type: 'number', description: 'Expected current script revision.' },
+      },
+      required: ['scriptId', 'jobId', 'expectedRevision'],
     },
   },
 ];
@@ -376,6 +484,7 @@ async function handleToolCall(name, args) {
     'flow_use_grid_architect', 'flow_use_tool',
     'flow_open', 'flow_generate_image', 'flow_generate_video',
     'flow_create_character', 'flow_create_scene',
+    'flow_create_project', 'flow_generate_confirm', 'flow_rename_character',
   ]);
   const generation = ['flow_generate_image', 'flow_generate_video', 'flow_create_character', 'flow_create_scene', 'flow_use_grid_architect'].includes(name);
   if (generation && pendingGeneration.size) {
@@ -398,13 +507,21 @@ async function handleToolCall(name, args) {
   return dispatchToolCall(name, args);
 }
 
+function rejectConflictingScriptIds(args, tool) {
+  if (args?.scriptId !== undefined && args?.storyId !== undefined && args.scriptId !== args.storyId) {
+    throw new FlowError('INVALID_PARAMS', `[INVALID_PARAMS] Conflicting scriptId and storyId for ${tool}`, {
+      scriptId: args.scriptId, storyId: args.storyId,
+    });
+  }
+}
+
 async function dispatchToolCall(name, args, epoch) {
   logger.info('Tool called', { tool: name, args: args ? JSON.stringify(args).substring(0, 200) : 'none' });
 
   switch (name) {
     case 'flow_connect': {
       const v = parseOrThrow(schemas.flow_connect, args, 'flow_connect');
-      const result = await launchKiaraProfile(v.headless);
+      const result = await launchKiaraProfile(v.headless, { cdpPort: v.cdpPort });
       assertUiCurrent(epoch);
       if (result.browser) setBrowser(result.browser);
       let page;
@@ -471,6 +588,34 @@ async function dispatchToolCall(name, args, epoch) {
       return { content: [{ type: 'text', text: JSON.stringify({ status: 'disconnected' }) }] };
     }
 
+    case 'flow_list_browser_targets': {
+      const result = await handleListBrowserTargets();
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_create_project': {
+      const v = parseOrThrow(schemas.flow_create_project, args, 'flow_create_project');
+      const result = await handleCreateProject(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_list_projects': {
+      const result = await handleListProjects();
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_generate_confirm': {
+      const v = parseOrThrow(schemas.flow_generate_confirm, args, 'flow_generate_confirm');
+      const result = await handleGenerateConfirm(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_rename_character': {
+      const v = parseOrThrow(schemas.flow_rename_character, args, 'flow_rename_character');
+      const result = await handleRenameCharacter(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
     case 'flow_open': {
       const v = parseOrThrow(schemas.flow_open, args, 'flow_open');
       const result = await handleFlowOpen(v);
@@ -528,7 +673,15 @@ async function dispatchToolCall(name, args, epoch) {
         }
       }
       const cached = loadCatalog();
-      return { content: [{ type: 'text', text: JSON.stringify(cached ? { ...cached, source: 'cache' } : { ...getUniverse(), source: 'fallback' }, null, 2) }] };
+      if (cached) {
+        const at = Date.parse(cached.savedAt || cached.discoveredAt || '') || 0;
+        const ageMs = at ? Date.now() - at : null;
+        return { content: [{ type: 'text', text: JSON.stringify({ ...cached, source: 'cache',
+          stale: ageMs === null || ageMs > 6 * 3600 * 1000, cacheAgeMs: ageMs,
+          note: 'Cache may predate the live UI (models/ratios change). For a live refresh, navigate into a project first, then call with refresh:true.',
+        }, null, 2) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ ...getUniverse(), source: 'fallback' }, null, 2) }] };
     }
 
     case 'flow_download_latest': {
@@ -652,6 +805,32 @@ async function dispatchToolCall(name, args, epoch) {
       const v = parseOrThrow(schemas[name] || schemas.flow_story_review, normalizedArgs, name);
       const normalized = { ...v, storyId: v.scriptId || v.storyId, scriptId: v.scriptId || v.storyId };
       const result = await handleScriptReview(normalized);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_story_run':
+    case 'flow_script_run': {
+      rejectConflictingScriptIds(args, name);
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId ?? args?.storyId,
+        storyId: args?.storyId ?? args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name], normalizedArgs, name);
+      const result = await handleScriptRun(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_story_resume':
+    case 'flow_script_resume': {
+      rejectConflictingScriptIds(args, name);
+      const normalizedArgs = {
+        ...args,
+        scriptId: args?.scriptId ?? args?.storyId,
+        storyId: args?.storyId ?? args?.scriptId,
+      };
+      const v = parseOrThrow(schemas[name], normalizedArgs, name);
+      const result = await handleScriptResume(v);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
