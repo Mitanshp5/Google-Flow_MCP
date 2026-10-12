@@ -340,3 +340,12 @@ Reconciles the stale “W08–W13 NOT started” boundary in §5/§8: W08 source
 - Authoritative source-bound acceptance: `qa-output/2026-10-11/w09-local/final-gates/local-acceptance.json`; review: `final-gates/independent-review.json`; full counts/protected hashes: `final-gates/parent-gate-summary.json`; acceptance ledger updated. Gate A adapter and both protected test hashes, all accepted domain/storage/W08 implementation hashes, HEAD and index remain unchanged.
 - Stopped before W10–W13. No live Flow generation (zero-credit included), credit spend, purchase, public upload, staging, commit or push occurred. Repository/user files were not reset or discarded; the earlier unauthorized browser-process termination remains documented above, with victim ownership and any volatile browser-work loss unestablished. Live acceptance requires separate explicit authorization for a bounded real image-generation test, fresh verified zero-cost quote and matching account/project/model/approval policy; authorization alone does not automatically enable the currently blocked live execution path. Local synthetic fixtures are not Flow-generated evidence.
 
+
+---
+
+## Live MCP tools milestone — 2026-10-12 (development)
+
+- Five new MCP tools, all live-verified against flow.google.com: `flow_list_browser_targets`, `flow_create_project`, `flow_list_projects`, `flow_generate_confirm` (quote-gated live click, `max_credits` ceiling, never confirms `prepared_unverified`), `flow_rename_character`. `flow_connect` takes `cdpPort` to reuse an already-open Chrome.
+- Full creator loop closed live in isolated projects: character prepare + live Send + rename to Bob, image + `@Bob` verified + confirmed (0 credits), 9:16 Omni 1.1 Flash video + `@Bob` verified + confirmed under cap 5. Earlier Veo 3.1 Fast clip cost ~20 credits; Omni is the cheap path.
+- Adjacent fixes: character composer probes the inner contenteditable (+ `archetype` param), open-characters accepts the archetype-cards page, mentions restore verbatim plain-text preparations and normalize wrapped titles, model cache reports `stale`/`cacheAgeMs`, script-run prompt error names the fix, character/video preparations return `jobId`.
+- Version bumped 1.0.1 to 1.1.0 (`package.json` + MCP server string). Gate-A `submission-adapter.js` untouched.

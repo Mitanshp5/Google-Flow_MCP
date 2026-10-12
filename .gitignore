@@ -23,7 +23,9 @@ AUDIT_LOG.untracked.md
 # Local QA captures, worker copies and generated verification artifacts
 /qa-output/
 /reliability-evidence/
+/evidence/
 /evidence-v2/
+/brag-output/
 /staging/
 /coverage/
 /.npm-cache/

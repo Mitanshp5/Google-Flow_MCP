@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -840,7 +838,7 @@ async function dispatchToolCall(name, args, epoch) {
 }
 
 const server = new Server(
-  { name: 'google-flow-browser-mcp', version: '1.0.1' },
+  { name: 'google-flow-browser-mcp', version: '1.1.0' },
   { capabilities: { tools: {} } }
 );
 

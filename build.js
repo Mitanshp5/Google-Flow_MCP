@@ -14,8 +14,9 @@ async function build() {
       format: 'esm',
       platform: 'node',
       target: 'node22',
-      // NOTE: no banner — esbuild preserves src/index.js's #! shebang automatically.
-      // Adding banner duplicates it (line 2 #! = SyntaxError).
+      // The bin entry needs a shebang but src must not carry one (it breaks
+      // vitest's transform). esbuild injects it into dist output only.
+      banner: { js: '#!/usr/bin/env node' },
       // Mark dependencies as external so they aren't bundled
       external: [
         'playwright',

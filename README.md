@@ -172,16 +172,19 @@ npm run build       # bundles src/ -> dist/ (required before register)
 
 ## Typical workflow
 
-1. `npm run start-browser` — once per session, leave the Chrome window open
+1. `npm run start-browser` — once per session, leave the Chrome window open (or reuse an already-open Chrome: `flow_list_browser_targets` finds its CDP port, `flow_connect` takes `cdpPort`)
 2. Your AI agent (with this MCP registered) calls:
    - `flow_connect` — attach to the running Chrome (also refreshes the live model catalog)
    - `flow_account_check` — confirm the right Google account is signed in
-   - `flow_list_models` — list live video/image models, ratios, durations (call once per session before generating)
+   - `flow_list_models` — list live video/image models, ratios, durations (call once per session before generating; cache reports `stale`/`cacheAgeMs`)
+   - `flow_create_project` — mint a brand-new project (never reuses/renames an existing one; pin it via `project_url`)
    - `flow_generate_image` — prepare (or with `auto_confirm:true`, generate) images in a Flow project
-   - `flow_create_character` — create reusable characters
+   - `flow_create_character` — create reusable characters (optional `archetype` starter card)
    - `flow_generate_video` — prepare (or with `confirm_generate:true`, paid-generate) videos, optionally referencing
      previously generated images/characters via `ingredients` (`@name`
      references)
+   - `flow_generate_confirm` — live-click Generate for a verified `ready_for_confirmation` preparation, gated by `max_credits` (images ~0, Omni cheap, Veo ~20; never confirms `prepared_unverified`)
+   - `flow_rename_character` — rename a character in its detail page (never the project title)
    - `flow_list_mention_options` — see what images/characters are available
      to reference by name
    - `flow_create_scene` — create a new scene, optionally referencing characters
@@ -196,17 +199,22 @@ everything ends up in one place instead of a new project per request.
 
 | Tool | Purpose |
 |---|---|
-| `flow_connect` | Connect to / launch Chrome via CDP, optionally open Flow |
+| `flow_connect` | Connect to / launch Chrome via CDP, optionally open Flow (`cdpPort` reuses an already-open browser) |
 | `flow_disconnect` | Close the browser connection |
+| `flow_list_browser_targets` | Probe local CDP ports for a listening Chrome (no browser needed) |
+| `flow_create_project` | Mint a brand-new project (never reuses/renames; pin via `project_url`) |
+| `flow_list_projects` | List known projects from the local registry (no browser needed) |
 | `flow_open` | Navigate the connected browser to a Flow URL without reconnecting |
 | `flow_status` | Report current connection/page status |
 | `flow_account_check` | Verify the signed-in Google account matches `expectedAccount` |
 | `flow_discover_ui` | Navigate to a Flow page and dump interactive elements (debugging) |
 | `flow_generate_image` | Generate image(s) from a prompt in the current project (prepare-only by default; `auto_confirm:true` spends credits) |
 | `flow_generate_video` | Generate video(s), optionally with `ingredients`/`use_character`/`use_scene` references (prepare-only by default; `confirm_generate:true` spends credits) |
+| `flow_generate_confirm` | Live-click Generate for a verified `ready_for_confirmation` job, gated by `max_credits` (never confirms `prepared_unverified`) |
+| `flow_rename_character` | Rename a character in its detail page (never the project title) |
 | `flow_list_models` | List video/image models, ratios, durations from Flow UI (live) or cache |
 | `flow_download_latest` | Download the most recently generated asset |
-| `flow_create_character` | Create a new character (name + description + reference images) |
+| `flow_create_character` | Create a new character (name + description + optional `archetype` starter + reference images) |
 | `flow_import_character` | Import a character from a saved JSON file |
 | `flow_open_characters` | Open the Characters page for a project |
 | `flow_list_mention_options` | List images/characters available for `@name` references |

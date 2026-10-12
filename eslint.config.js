@@ -16,6 +16,7 @@ export default [
       'chrome-profile-kiara/**',
       'qa-output/**',
       'evidence/**',
+      'brag-output/**',
     ],
   },
   {

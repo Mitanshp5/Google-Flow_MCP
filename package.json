@@ -1,6 +1,6 @@
 {
   "name": "google-flow_mcp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "MCP server for Google Flow (flow.google.com) via browser automation",
   "keywords": [
     "Image",
