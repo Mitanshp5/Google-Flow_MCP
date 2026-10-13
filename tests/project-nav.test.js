@@ -8,6 +8,7 @@ import {
   registerTaskInProject,
   getActiveSidebarSection,
   getProjectContextInfo,
+  ensureProjectInContext,
 } from '../src/navigation/project-navigator.js';
 import { mockPageRoutes } from './helpers/mock-page.js';
 
@@ -29,6 +30,13 @@ afterEach(() => {
 });
 
 describe('project registry persistence', () => {
+  it('preserves registered project titles when a campaign is passed on reuse', async () => {
+    const url = 'https://flow.google.com/project/existing-title';
+    saveProjects({ projects: [{ id: 'registered', url, name: 'The Last Light', campaign: 'campaign-id', tasks: [] }] });
+    const page = { url: () => url, evaluate: () => { throw new Error('Reuse must not attempt rename'); } };
+    await ensureProjectInContext(page, { project_url: url, campaign: 'campaign-id' });
+    expect(loadProjects().projects[0].name).toBe('The Last Light');
+  });
   it('round-trips through an atomic write (no tmp leftovers)', () => {
     const data = { projects: [{ id: 'p1', name: 'N', tasks: [] }] };
     saveProjects(data);

@@ -61,6 +61,7 @@ describe('w00 import lifecycle uses actual exports', () => {
       'flow_create_project', 'flow_create_scene', 'flow_discover_ui', 'flow_disconnect',
       'flow_download_latest', 'flow_generate_confirm', 'flow_generate_image', 'flow_generate_video',
       'flow_import_character', 'flow_list_browser_targets', 'flow_list_mention_options', 'flow_list_models',
+      'flow_export_reel',
       'flow_list_projects', 'flow_open', 'flow_open_characters', 'flow_open_tools_gallery',
       'flow_queue_reset', 'flow_queue_status', 'flow_rename_character', 'flow_screenshot',
       'flow_script_create', 'flow_script_review', 'flow_script_status',
@@ -293,7 +294,7 @@ const SCHEMA_FOR_TOOL = {
 };
 const NO_SCHEMA_TOOLS = [
   'flow_disconnect', 'flow_status', 'flow_account_check', 'flow_list_models',
-  'flow_download_latest', 'flow_open_tools_gallery', 'flow_queue_reset',
+  'flow_download_latest', 'flow_open_tools_gallery', 'flow_queue_reset', 'flow_export_reel',
 ];
 
 // Outstanding advertised-vs-validated gaps, owned by W06. Both directions

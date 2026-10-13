@@ -42,6 +42,7 @@ import { schemas, parseOrThrow } from './utils/validate.js';
 import { getUniverse, loadCatalog } from './utils/models.js';
 import { runRetentionSweep } from './utils/file-manager.js';
 import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
+import { handleExportReel } from './tools/export-reel.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { withUiTransaction, assertUiCurrent } from './browser/ui-transaction.js';
@@ -84,13 +85,13 @@ const TOOL_DEFINITIONS = [
     },
     {
       name: 'flow_generate_confirm',
-      description: 'LIVE PAID CLICK for a prepared job: re-checks the quote against max_credits, clicks Generate, polls for output. Only verified ready_for_confirmation image/video/character preparations (never prepared_unverified). Explicit opt-in per call.',
+      description: 'LIVE PAID CLICK for a prepared job: re-checks the quote against max_credits, clicks Generate, watches briefly (short 20-30s, early exit on new output). Returns immediately; then poll flow_queue_status until hasActiveJob=false + status=completed, then flow_download_latest. Only verified ready_for_confirmation preparations. No auto-download.',
       inputSchema: {
         type: 'object',
         properties: {
           job_id: { type: 'string', description: 'Prepared ready_for_confirmation job id.' },
-          max_credits: { type: 'number', description: 'Spend ceiling (images ~0, Omni cheap, Veo ~20). Refuses above this.', default: 2 },
-          wait_ms: { type: 'number', description: 'Post-click poll wait (15000-600000).', default: 120000 },
+          max_credits: { type: 'number', description: 'Spend ceiling (images ~0, Omni 1.1 Flash cheap default, Veo ~20). Refuses above this.', default: 2 },
+          wait_ms: { type: 'number', description: 'Post-click watch, default 2s, ceiling 30s. Characters return immediately for renaming. Verify remote output before downloading.', default: 2000 },
         },
         required: ['job_id'],
       },
@@ -176,7 +177,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_generate_video',
-    description: 'Prepare a Veo video (prepare-only, no spend). Fast tests, Quality finals; ingredients need 8s.',
+    description: 'Prepare video (default Omni 1.1 Flash cheap; prepare-only, no spend). Quality finals; ingredients need 8s.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -213,6 +214,7 @@ const TOOL_DEFINITIONS = [
       type: 'object',
       properties: {
         refresh: { type: 'boolean', description: 'Force re-discovery from the open UI instead of cache.', default: false },
+        probe_capabilities: { type: 'boolean', description: 'Also probe per-model settings (slow, changes model selection temporarily). Requires refresh:true.', default: false },
       },
     },
   },
@@ -220,6 +222,16 @@ const TOOL_DEFINITIONS = [
     name: 'flow_download_latest',
     description: 'Download the most recently generated file from Google Flow.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'flow_export_reel',
+    description: 'Export three existing project clips in prompt order, trim each to 7s, concatenate to 21s using local FFmpeg. No generation or credits. Prepare-only by default. Downloads and verifies MP4s from Flow ZIPs; requires audio tracks.',
+    inputSchema: { type: 'object', properties: {
+      project_url: { type: 'string', description: 'Exact current Flow project root URL.' },
+      prompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'Unique video prompt prefixes in story order.' },
+      ffmpeg_path: { type: 'string', description: 'Existing local ffmpeg executable with ffprobe alongside.' },
+      prepare_only: { type: 'boolean', default: true },
+    }, required: ['project_url', 'prompts'] },
   },
   {
     name: 'flow_create_character',
@@ -656,10 +668,10 @@ async function dispatchToolCall(name, args, epoch) {
         try {
           const live = await discoverModels(getPage());
           if (live) {
-            // P1-3: best-effort per-model capability probe; name lists return
-            // regardless (selection clicks only — never Generate, no spend).
+            // Listing names must not implicitly run the slow per-model probe.
+            // Keep capability calibration available as an explicit opt-in.
             let capabilities = null;
-            try {
+            if (args?.probe_capabilities === true) try {
               capabilities = await discoverCapabilities(getPage(), { models: live.videoModels });
             } catch (e) {
               logger.warn('Capability discovery failed, keeping name lists only', { error: e.message });
@@ -684,6 +696,11 @@ async function dispatchToolCall(name, args, epoch) {
 
     case 'flow_download_latest': {
       const result = await handleDownloadLatest(args);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_export_reel': {
+      const result = await handleExportReel(args);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 

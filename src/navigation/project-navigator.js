@@ -429,6 +429,13 @@ export async function ensureProjectInContext(page, context = {}) {
   // If a name was requested and differs from what we last set for this
   // session's project, (re)apply it via renameCurrentProject + READ BACK.
   const maybeApplyName = async (id) => {
+    // Context names/campaigns select projects; they are not rename commands.
+    // Preserve the registered title on reuse, including after MCP restarts.
+    const existing = loadProjects().projects.find(p => extractProjectId(p.url) === id);
+    if (existing?.name) {
+      _sessionProjectName = existing.name;
+      return;
+    }
     const want = effectiveName;
     if (want && want !== _sessionProjectName) {
       // Adopt without UI clicks when the page already shows the name.

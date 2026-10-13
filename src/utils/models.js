@@ -184,7 +184,7 @@ export function resolveModel(requested, kind = 'video') {
     // literals below are last-resort fallbacks only. W03: image default is the
     // observed live Pro variant, never the stale "Nano Banana 2".
     const def = kind === 'video'
-      ? get('defaultVideoModel', 'Veo 3.1 - Fast')
+      ? get('defaultVideoModel', 'Omni 1.1 Flash')
       : get('defaultImageModel', 'Nano Banana Pro');
     return { name: def, caps: capsFor(def), from: 'default' };
   }

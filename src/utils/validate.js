@@ -64,7 +64,7 @@ export const schemas = {
     prompt: nonEmpty('prompt').describe('Scene + action. Keep optics (lens/aperture/camera body) out — those are UI selectors.'),
     // Model names are dynamic (flow_list_models refreshes from Flow UI at launch).
     // Handler resolves against the live universe; unknown names fail with the live list.
-    model: z.string().trim().min(1).max(100).optional().describe('Video model name (see flow_list_models) or auto. Fast-then-Quality: auto/Fast/Lite tests, Quality finals, Omni for fast vertical. Quality blocks ingredients/extend.'),
+    model: z.string().trim().min(1).max(100).optional().describe('Video model name (see flow_list_models) or auto (= Omni 1.1 Flash cheap default). Veo Quality finals, Veo Fast/Lite tests (~20 credits). Quality blocks ingredients/extend.'),
     ratio: z.enum(['16:9', '9:16']).optional().describe('Video aspect ratio.'),
     duration: z.union([z.enum(['4s', '6s', '8s', '10s']), z.number().int().min(1).max(30)]).optional().describe('Clip length. Ingredients require 8s.'),
     quality: z.enum(['360p', '720p']).optional().describe('Video resolution toggle in settings.'),
@@ -176,8 +176,8 @@ export const schemas = {
   flow_generate_confirm: z.object({
     job_id: z.string().trim().min(1).max(64).optional().describe('Prepared ready_for_confirmation job to live-click Generate for.'),
     jobId: z.string().trim().min(1).max(64).optional(),
-    max_credits: z.number().min(0).max(1000).optional().default(2).describe('Spend ceiling; quoted cost above this refuses (images ~0, Omni cheap, Veo ~20).'),
-    wait_ms: z.number().int().min(15000).max(600000).optional().default(120000).describe('Post-click poll wait.'),
+    max_credits: z.number().min(0).max(1000).optional().default(2).describe('Spend ceiling; quoted cost above this refuses (images ~0, Omni 1.1 Flash cheap default, Veo ~20).'),
+    wait_ms: z.number().int().min(1000).max(600000).optional().default(2000).describe('Post-click watch, default 2s, ceiling 30s. Characters return immediately for renaming. Verify remote output before downloading; never blindly resubmit.'),
   }).passthrough().refine((v) => (v.job_id && v.job_id.trim()) || (v.jobId && v.jobId.trim()),
     { message: 'job_id is required', path: ['job_id'] }),
 

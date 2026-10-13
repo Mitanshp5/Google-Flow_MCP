@@ -29,10 +29,12 @@
   },
   "videoModels": {
     "Omni Flash": "omni-flash",
+    "Omni 1.1 Flash": "omni-1.1-flash",
     "Veo 3.1 - Lite": "veo-3.1-lite",
     "Veo 3.1 - Fast": "veo-3.1-fast",
     "Veo 3.1 - Quality": "veo-3.1-quality"
   },
+  "defaultVideoModel": "Omni 1.1 Flash",
   "ratios": [
     "16:9",
     "4:3",

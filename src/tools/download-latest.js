@@ -3,10 +3,8 @@ import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { getOutputDir } from '../utils/file-manager.js';
-import { jobQueue } from '../queue/job-queue.js';
 import { selectNewestEligible, verifyDownloadedBytes, classifyDownloadError } from '../assets/catalog.js';
-import fs from 'fs';
-import path from 'path';
+import { saveMediaDownload } from '../utils/media-download.js';
 
 // Extension sets from the P0-3 plan (.mp4/.webm → video; .png/.jpg/.webp
 // → image; .jpeg included as the same format as .jpg). Anything else
@@ -155,23 +153,8 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
         await shotFn(page, 'download-no-event').catch(() => null);
         return { status: 'download_initiated', message: 'Download button clicked, but no download event was observed. Check the project page.' };
       }
-      const suggested = download.suggestedFilename() || `flow-download-${Date.now()}`;
-      const jobType = jobQueue.getCurrentJob()?.type ?? jobQueue.getStatus(1).history[0]?.type ?? null;
-      const { kind, detectedFrom } = resolveDownloadKind({ suggestedFilename: suggested, jobType });
-      const dir = outDirFn(kind);
-      const safe = suggested.replace(/[/\\?%*:|"<>]/g, '-').slice(0, 120);
-      const savePath = path.join(dir, `${Date.now()}_${safe}`);
-      await download.saveAs(savePath);
-      let verification;
-      try {
-        verification = verifySavedDownload({ bytes: fs.readFileSync(savePath), expectedKind: kind === 'other' ? null : kind, savedPath: savePath });
-      } catch (e) {
-        verification = { verified: false, reason: `saved file unreadable: ${e.message}`, hash: null, size: 0, mime: null, path: savePath };
-      }
-      if (!verification.verified) {
-        return { status: 'download_unverified', message: `Download saved but byte verification failed: ${verification.reason}.`, path: savePath, kind, detectedFrom, verification, latest_verified: false, asset: null };
-      }
-      return { status: 'downloaded', message: 'Download saved from the currently open menu (latest NOT verified — no enumerable asset identity).', path: savePath, kind, detectedFrom, verification, latest_verified: false, asset: null };
+      const saved = await saveMediaDownload(download, outDirFn);
+      return { status: 'downloaded', message: 'Verified media saved with format extensions (current selection; latest identity not verified).', ...saved, latest_verified: false, asset: null };
     }
 
     // 2. Choose the verified newest eligible (or explicit id within the DOM).
@@ -208,24 +191,8 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
       await shotFn(page, 'download-no-event').catch(() => null);
       return { status: 'download_initiated', message: error || 'Download menu did not produce a download event.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
     }
-    const suggested = download.suggestedFilename() || chosen.title || `flow-download-${Date.now()}`;
-    const jobType = jobQueue.getCurrentJob()?.type ?? jobQueue.getStatus(1).history[0]?.type ?? null;
-    const { kind, detectedFrom } = resolveDownloadKind({ suggestedFilename: suggested, jobType });
-    const dir = outDirFn(kind);
-    const safe = String(suggested).replace(/[/\\?%*:|"<>]/g, '-').slice(0, 120);
-    const savePath = path.join(dir, `${Date.now()}_${safe}`);
-    await download.saveAs(savePath);
-    let verification;
-    try {
-      verification = verifySavedDownload({ bytes: fs.readFileSync(savePath), expectedKind: kind === 'other' ? null : kind, savedPath: savePath });
-    } catch (e) {
-      verification = { verified: false, reason: `saved file unreadable: ${e.message}`, hash: null, size: 0, mime: null, path: savePath };
-    }
-    logger.info('Download saved', { path: savePath, kind, detectedFrom, verified: verification.verified, hash: verification.hash, asset: chosen.assetId });
-    if (!verification.verified) {
-      return { status: 'download_unverified', message: `Download saved but byte verification failed: ${verification.reason}.`, path: savePath, kind, detectedFrom, verification, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
-    }
-    return { status: 'downloaded', message: 'Download saved.', path: savePath, kind, detectedFrom, verification, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
+    const saved = await saveMediaDownload(download, outDirFn);
+    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
     // Signed-URL expiry / incomplete / failure — no fabricated identity.
     const classified = classifyDownloadError(err);

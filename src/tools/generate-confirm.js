@@ -10,7 +10,77 @@ import { parseCostLabel } from '../browser/cost-quote.js';
 // - only jobs in verified ready_for_confirmation state (never prepared_unverified)
 // - image/video/character preparations (character portraits are image-class, ~0 credits)
 // - spends nothing above max_credits (default 2; pass higher to allow Veo-class models)
-// - image models are ~0 credits; cheap video is Omni 1.1 Flash, NOT Veo Fast (~20)
+// - image models are ~0 credits; cheap video is Omni 1.1 Flash (default), NOT Veo Fast (~20)
+// Short-wait + poll pattern (fix for long-block caller waits):
+// flow_generate_confirm never holds the MCP call for the full render.
+// It clicks Generate, watches briefly (20-30s) with early exit on the
+// first new-output signal, completes the local queue job immediately, and
+// returns. The caller then polls flow_queue_status until
+// hasActiveJob=false + history status=completed, then calls
+// flow_download_latest. Long wait_ms values (e.g. 120000) are clamped to
+// the short ceiling — the queue record (not the blocked caller) is the
+// source of truth for completion (image job 838d4ab3 completed at
+// 05:56:26 while its caller was still blocked in the old full-window poll).
+export const GENERATE_CONFIRM_DEFAULT_WAIT_MS = 2000;
+export const GENERATE_CONFIRM_MIN_WAIT_MS = 1000;
+export const GENERATE_CONFIRM_MAX_WAIT_MS = 30000;
+export const GENERATE_CONFIRM_POLL_STEP_MS = 2000;
+
+/**
+ * Pure short-wait resolver (unit-tested). Long windows clamp to the short
+ * ceiling so callers use poll-queue-then-download instead of blocking.
+ * Returns { waitMs, requested, clamped }.
+ */
+export function resolveConfirmWaitMs(raw) {
+  const requested = Number(raw);
+  const parsed = Number.isFinite(requested) && requested > 0
+    ? Math.floor(requested)
+    : GENERATE_CONFIRM_DEFAULT_WAIT_MS;
+  const waitMs = Math.min(
+    Math.max(parsed, GENERATE_CONFIRM_MIN_WAIT_MS),
+    GENERATE_CONFIRM_MAX_WAIT_MS,
+  );
+  return { waitMs, requested: Number.isFinite(requested) ? Math.floor(requested) : null, clamped: waitMs !== parsed };
+}
+
+/**
+ * Pure new-output detector (unit-tested). Any positive signal counts:
+ * higher media count, a media id unseen in the baseline, or a new gallery
+ * tile id. Baseline/newness (not timing alone) proves output landed.
+ */
+export function detectNewMedia(before = {}, after = {}) {
+  const bCount = Number(before?.count);
+  const aCount = Number(after?.count);
+  if (Number.isFinite(bCount) && Number.isFinite(aCount) && aCount > bCount) return true;
+  const bIds = new Set([...(before?.ids || []), ...(before?.tiles || [])].filter((x) => typeof x === 'string' && x));
+  if (bIds.size > 0 || Array.isArray(after?.ids) || Array.isArray(after?.tiles)) {
+    for (const id of [...(after?.ids || []), ...(after?.tiles || [])]) {
+      if (typeof id === 'string' && id && !bIds.has(id)) return true;
+    }
+  }
+  return false;
+}
+
+async function snapshotMedia(page) {
+  try {
+    return await page.evaluate(() => {
+      const count = document.querySelectorAll('img,video').length;
+      const ids = [...new Set(
+        [...document.querySelectorAll('img')].map((img) => {
+          const m = String(img.src || '').match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
+          return m ? m[1] : null;
+        }).filter(Boolean)
+          .concat([...document.querySelectorAll('video')].map((v) => v.currentSrc || v.src || '').filter(Boolean)),
+      )];
+      const tiles = [...new Set(
+        [...document.querySelectorAll('[data-asset-id]')].map((el) => el.getAttribute('data-asset-id')).filter(Boolean),
+      )];
+      return { count, ids, tiles };
+    });
+  } catch {
+    return null;
+  }
+}
 export async function handleGenerateConfirm(args = {}) {
   const rawId = args.job_id ?? args.jobId ?? args.jobID;
   if (typeof rawId !== 'string' || !rawId.trim()) {
@@ -20,7 +90,12 @@ export async function handleGenerateConfirm(args = {}) {
   if (!Number.isFinite(maxCredits) || maxCredits < 0) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'max_credits must be a non-negative number');
   }
-  const waitMs = Math.min(Math.max(Number(args.wait_ms) || 120000, 15000), 600000);
+  const { waitMs, requested: requestedWaitMs, clamped: waitClamped } = resolveConfirmWaitMs(args.wait_ms);
+  if (waitClamped && requestedWaitMs !== null && requestedWaitMs > GENERATE_CONFIRM_MAX_WAIT_MS) {
+    logger.info('Confirm wait clamped to short ceiling; poll queue then download', {
+      requestedWaitMs, waitMs,
+    });
+  }
 
   const prep = jobQueue.getJob(rawId.trim());
   const state = prep?.result || null;
@@ -42,7 +117,7 @@ export async function handleGenerateConfirm(args = {}) {
     jobQueue.startJob(job.id);
     const page = getPage();
 
-    const before = await page.evaluate(() => document.querySelectorAll('img,video').length).catch(() => null);
+    const before = await snapshotMedia(page);
     const costText = await page.evaluate(() => {
       const els = Array.from(document.querySelectorAll('*'));
       for (const el of els) {
@@ -73,13 +148,42 @@ export async function handleGenerateConfirm(args = {}) {
     await takeScreenshot(page, 'confirm-before-click');
     await found.locator.click({ timeout: 8000 });
     logger.info('Generate clicked', { jobId: job.id, preparedJobId: rawId, quote });
-    await page.waitForTimeout(waitMs);
+    // Short-wait + poll: watch briefly with early exit on the FIRST
+    // new-output signal (count, media id, or gallery tile). Never holds the
+    // full render — the local queue job completes immediately on return and
+    // the caller polls flow_queue_status (hasActiveJob=false +
+    // history status) then flow_download_latest. No auto-download here.
+    // Character titles are editable during rendering; allow immediate rename.
+    const deadline = Date.now() + (state.type === 'character' ? 0 : waitMs);
+    let after = before;
+    let detected = false;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(Math.min(GENERATE_CONFIRM_POLL_STEP_MS, Math.max(500, deadline - Date.now())));
+      const snap = await snapshotMedia(page);
+      if (snap) after = snap;
+      if (before && after && detectNewMedia(before, after)) {
+        detected = true;
+        break;
+      }
+      // No baseline (empty gallery): any observed media is new output.
+      if (!before && after && (Number(after.count) > 0 || (after.ids || []).length > 0 || (after.tiles || []).length > 0)) {
+        detected = true;
+        break;
+      }
+    }
     await takeScreenshot(page, 'confirm-after');
-    const after = await page.evaluate(() => document.querySelectorAll('img,video').length).catch(() => null);
 
-    jobQueue.completeJob(job.id, { status: 'submitted', type: state.type, preparedJobId: rawId,
-      model_used: state.model_used, quote, mediaBefore: before, mediaAfter: after,
-      message: `Generate clicked (${quote.state === 'known' ? `${quote.total} credits` : 'unquoted, expected ~0 for images'}). Verify output in Flow.` });
+    const quoteLabel = quote.state === 'known' ? `${quote.total} credits` : 'unquoted, expected ~0 for images';
+    const pollHint = 'Poll flow_queue_status until hasActiveJob=false, then check history status=completed for this job id, then call flow_download_latest. Do not re-click Generate.';
+    jobQueue.completeJob(job.id, { status: detected ? 'completed' : 'submitted', type: state.type, preparedJobId: rawId,
+      jobId: job.id, model_used: state.model_used, quote,
+      mediaBefore: before, mediaAfter: after, detected,
+      waitMs, requestedWaitMs, waitClamped,
+      pollHint,
+      next: detected
+        ? { poll: 'flow_queue_status', until: 'hasActiveJob=false and history status=completed', then: 'flow_download_latest' }
+        : { poll: 'flow_queue_status', until: 'hasActiveJob=false and history status=completed', then: 'flow_download_latest', note: 'No new output within the short window; the Flow render may still be running — poll before downloading, never re-click blindly.' },
+      message: `Generate clicked (${quoteLabel}). ${detected ? 'New output detected — poll flow_queue_status until hasActiveJob=false + status=completed, then flow_download_latest.' : `No new output within the short ${waitMs}ms window${waitClamped ? ` (requested ${requestedWaitMs}ms clamped to the ${GENERATE_CONFIRM_MAX_WAIT_MS}ms short ceiling)` : ''}; the render may still be running — ${pollHint}`} `});
     return jobQueue.getJob(job.id).result;
   } catch (err) {
     try { await takeScreenshot(getPage(), 'generate-confirm-error'); } catch { /* ok */ }
