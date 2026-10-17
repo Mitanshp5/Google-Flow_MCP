@@ -343,6 +343,7 @@ class JobQueue {
         createdAt: this.currentJob.createdAt,
       } : null,
       totalJobs: this.jobs.size,
+      completionScope: 'local_handler_only',
       history: this.history.slice(0, limit),
       jobTimeoutMs: jobTimeoutMs(),
       // W05 fencing/reset/watchdog disclosure.

@@ -734,6 +734,7 @@ export async function navigateToSidebar(page, section, opts = {}) {
 // Live root is mat-nav-list[role=navigation] under mat-sidenav.project-sidenav;
 // legacy HTML nav / *sidebar* scopes are preserved for old fixtures.
 const SIDEBAR_SCOPES = [
+  'mat-nav-list[role="navigation"] button[mat-list-item], mat-sidenav.project-sidenav button[mat-list-item]',
   'mat-sidenav.project-sidenav mat-nav-list[role="navigation"] mat-list-item, mat-sidenav.project-sidenav mat-nav-list[role="navigation"] a',
   'mat-nav-list[role="navigation"] mat-list-item, mat-nav-list[role="navigation"] a',
   'mat-sidenav.project-sidenav mat-list-item, mat-sidenav.project-sidenav a',
@@ -1010,7 +1011,21 @@ export async function navigateSidebarDetailed(page, section, opts = {}) {
       const selected = evidence?.selected ? normalizeSidebarLabel(evidence.selected) : null;
       const selectedMatch = !!selected && selected.toLowerCase() === want;
       const app = await readSidebarAppState(page);
-      if (selectedMatch && app.app === 'ready') {
+      // The real Tools gallery intentionally has no prompt composer. Require
+      // its observed route, heading AND navigation controls instead of using
+      // the generation-shell readiness rule or trusting a click alone.
+      let toolsGalleryReady = false;
+      if (selectedMatch && want === 'tools' && app.allowedUrl && ['unknown', 'loading'].includes(app.app)
+        && /\/project\/[^/]+\/tools(?:[?#]|$)/.test(page.url())) {
+        try {
+          await page.getByRole('heading', { name: 'Explore tools', exact: true }).waitFor({state: 'visible', timeout: 3000});
+          toolsGalleryReady = await page.getByRole('heading', { name: 'Explore tools', exact: true }).isVisible()
+            && await page.getByText('My Tools', { exact: true }).isVisible()
+            && await page.getByText('Community', { exact: true }).isVisible()
+            && await page.getByText('Templates', { exact: true }).isVisible();
+        } catch { /* missing/ambiguous gallery identity stays blocked */ }
+      }
+      if (selectedMatch && (app.app === 'ready' || toolsGalleryReady)) {
         logger.info('Sidebar navigation verified', { section, active: selected, route: evidence?.hash || evidence?.url });
         return { ok: true, active: selected, route: evidence?.hash || evidence?.url, heading: evidence?.heading || null, blocker: null };
       }

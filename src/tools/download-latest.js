@@ -62,12 +62,12 @@ export async function enumerateAssetTiles(page) {
   try {
     const tiles = await page.evaluate(() => {
       const out = [];
-      for (const el of document.querySelectorAll('[data-asset-id]')) {
-        const tile = el.closest('.asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
+      for (const el of document.querySelectorAll('[data-asset-id], flow-image-tile [data-media-id], flow-video-tile [data-media-id]')) {
+        const tile = el.closest('flow-image-tile, flow-video-tile, .asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
         const assetId = el.getAttribute('data-asset-id') || el.getAttribute('data-media-id');
         if (!assetId) continue;
-        const title = el.getAttribute('data-title') || tile.getAttribute?.('data-title') || (tile.textContent || '').trim().slice(0, 120);
-        const kind = el.getAttribute('data-kind') || tile.getAttribute?.('data-kind') || null;
+        const title = el.getAttribute('data-title') || tile.getAttribute?.('data-title') || tile.querySelector?.('.footer-title')?.textContent?.trim() || (tile.textContent || '').trim().slice(0, 120);
+        const kind = el.getAttribute('data-kind') || tile.getAttribute?.('data-kind') || (tile.tagName === 'FLOW-IMAGE-TILE' ? 'image' : tile.tagName === 'FLOW-VIDEO-TILE' ? 'video' : null);
         const projectId = el.getAttribute('data-project') || tile.getAttribute?.('data-project') || null;
         const account = el.getAttribute('data-account') || tile.getAttribute?.('data-account') || null;
         const createdRaw = el.getAttribute('data-created-at') || tile.getAttribute?.('data-created-at')
@@ -93,7 +93,8 @@ export async function enumerateAssetTiles(page) {
 }
 
 function tileLocator(page, assetId) {
-  return page.locator(`.asset-tile[data-asset-id="${assetId}"], [data-asset-id="${assetId}"]`).first();
+  const id = String(assetId).replace(/["\\]/g, '\\$&');
+  return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"]`).first();
 }
 
 // Target the verified tile: hover/select → More options → Download, with the
@@ -107,15 +108,24 @@ async function exposeAndDownloadTile(page, asset) {
   } catch { /* hover best-effort */ }
   const more = tile.locator('button:has-text("More options"), [aria-label*="More" i], .more').first();
   if (await more.isVisible().catch(() => false)) {
-    await more.click().catch(() => {});
+    await more.click({ timeout: 3000 });
     await page.waitForTimeout(400);
   }
   // Scope the Download click to the tile/menu — never a page-wide first
   // download control belonging to another asset.
   let dlBtn = tile.locator('button:has-text("Download"), [aria-label*="download" i], .dl').first();
   if (!(await dlBtn.isVisible().catch(() => false))) {
-    const menuDl = page.locator('.menu:visible button:has-text("Download"), [role="menu"]:visible button:has-text("Download")').first();
+    const menuDl = page.locator('.menu:visible button:has-text("Download"), [role="menu"]:visible button:has-text("Download"), [role="menuitem"]:visible:has-text("Download")').first();
     if (await menuDl.isVisible().catch(() => false)) dlBtn = menuDl;
+  }
+  if (await dlBtn.getAttribute('aria-haspopup').catch(() => null) === 'menu') {
+    await dlBtn.hover();
+    const original = page.locator('[role="menu"]:visible [role="menuitem"]').filter({ hasText: /Original size/i }).first();
+    await original.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
+    if (!(await original.isVisible().catch(() => false))) {
+      return { download: null, error: 'Original-size download option not available; refusing upscale or paid actions' };
+    }
+    dlBtn = original;
   }
   if (!(await dlBtn.isVisible().catch(() => false))) {
     return { download: null, error: `Download affordance not exposed for asset "${id}" (hover→More→Download)` };
@@ -151,7 +161,7 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
       const download = await dp;
       if (!download) {
         await shotFn(page, 'download-no-event').catch(() => null);
-        return { status: 'download_initiated', message: 'Download button clicked, but no download event was observed. Check the project page.' };
+        return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: 'No file was downloaded. The render may still be running or the download control may open a menu. Verify the asset before retrying.' };
       }
       const saved = await saveMediaDownload(download, outDirFn);
       return { status: 'downloaded', message: 'Verified media saved with format extensions (current selection; latest identity not verified).', ...saved, latest_verified: false, asset: null };
@@ -189,10 +199,10 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
     const { download, error } = await exposeAndDownloadTile(page, chosen);
     if (!download) {
       await shotFn(page, 'download-no-event').catch(() => null);
-      return { status: 'download_initiated', message: error || 'Download menu did not produce a download event.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
+      return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: error || 'Download menu did not produce a download event. No file saved.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
     }
     const saved = await saveMediaDownload(download, outDirFn);
-    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, latest_verified: true, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
+    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true, latest_verified: !explicitId, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
     // Signed-URL expiry / incomplete / failure — no fabricated identity.
     const classified = classifyDownloadError(err);

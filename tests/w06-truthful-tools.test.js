@@ -349,7 +349,10 @@ describe('W06 Truthful Generation Handlers — Video and Image', () => {
         auto_confirm: false,
         project_url: PROJECT_URL,
       }));
-      expect(res.status).toBe('ready_for_confirmation');
+      // Fixture exposes Veo Fast while the default request is Omni; an
+      // unverifiable model selection must not become a spend-ready plan.
+      expect(res.status).toBe('prepared_unverified');
+      expect(res.message).toMatch(/verification is incomplete/i);
       expect(res.shots_plan_only).toBe(true);
       expect(res.shots_notice).toMatch(/plan-only metadata/i);
       expect(res.settings_verification).toBeDefined();

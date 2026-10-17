@@ -112,8 +112,8 @@ export async function handleListMentionOptions(args = {}, deps = {}) {
     } else {
       richChanged = true;
       composer = {
-        state: 'invalidated',
-        reason: 'composer rich state changed during listing',
+        state: cmp.equal ? 'unverified' : 'invalidated',
+        reason: cmp.equal ? 'composer preservation could not be verified from the available UI evidence' : 'composer rich state changed during listing',
         comparison: cmp,
       };
     }
@@ -140,14 +140,17 @@ export async function handleListMentionOptions(args = {}, deps = {}) {
   // chips/slots/uploads) and it can be restored verbatim, re-verified below.
   if (hadPrepared && richChanged && before && after) {
     const noRefs = (s) => (!s || ((s.chips || []).length === 0 && Object.keys(s.slots || {}).length === 0 && (s.pendingUploads || []).length === 0));
-    if (noRefs(before) && noRefs(after) && typeof before.text === 'string' && before.text.trim()) {
+    // Unknown chip/slot observation is NOT proof of a text-only composer.
+    // Never clear/retype a rich prompt merely because our selectors missed it.
+    if (before.chipsObservable && after.chipsObservable && before.slotsObservable && after.slotsObservable
+      && noRefs(before) && noRefs(after) && typeof before.text === 'string' && before.text.trim()) {
       try {
         await promptInput.click().catch(() => {});
         await promptInput.fill('').catch(() => {});
         await promptInput.type(before.text.slice(0, 8000), { delay: 1 }).catch(() => {});
         await page.waitForTimeout(400);
         const reread = await readComposerSnapshot(page, promptInput).catch(() => null);
-        if (reread && (reread.text || '').replace(/\s+/g, ' ').trim() === before.text.replace(/\s+/g, ' ').trim()) {
+        if (reread && isValidRestoreClaim({before, after: reread, claimedBy: 'restore-verified'})) {
           composer = { state: 'restored', comparison: compareComposerSnapshots(before, reread) };
           richChanged = false;
         }
@@ -159,8 +162,10 @@ export async function handleListMentionOptions(args = {}, deps = {}) {
       status: 'blocked',
       references: [],
       picker: detailed.status,
-      reason: 'composer-prepared-state-lost',
-      message: 'Listing changed prepared composer state; preparation invalidated rather than silently reloaded.',
+      reason: composer.state === 'unverified' ? 'composer-preservation-unverified' : 'composer-prepared-state-lost',
+      message: composer.state === 'unverified'
+        ? 'References were read, but prepared composer preservation could not be verified. No text-only rewrite was attempted.'
+        : 'Listing changed prepared composer state; preparation invalidated rather than silently reloaded.',
       composer,
       screenshot: await shotFn(page, 'mention-options-invalidated').catch(() => null),
     };

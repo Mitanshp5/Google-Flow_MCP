@@ -11,16 +11,8 @@ import { parseCostLabel } from '../browser/cost-quote.js';
 // - image/video/character preparations (character portraits are image-class, ~0 credits)
 // - spends nothing above max_credits (default 2; pass higher to allow Veo-class models)
 // - image models are ~0 credits; cheap video is Omni 1.1 Flash (default), NOT Veo Fast (~20)
-// Short-wait + poll pattern (fix for long-block caller waits):
-// flow_generate_confirm never holds the MCP call for the full render.
-// It clicks Generate, watches briefly (20-30s) with early exit on the
-// first new-output signal, completes the local queue job immediately, and
-// returns. The caller then polls flow_queue_status until
-// hasActiveJob=false + history status=completed, then calls
-// flow_download_latest. Long wait_ms values (e.g. 120000) are clamped to
-// the short ceiling — the queue record (not the blocked caller) is the
-// source of truth for completion (image job 838d4ab3 completed at
-// 05:56:26 while its caller was still blocked in the old full-window poll).
+// Watches briefly after submission. Local job completion is NOT remote
+// render completion; inspect the new remote asset before downloading.
 export const GENERATE_CONFIRM_DEFAULT_WAIT_MS = 2000;
 export const GENERATE_CONFIRM_MIN_WAIT_MS = 1000;
 export const GENERATE_CONFIRM_MAX_WAIT_MS = 30000;
@@ -64,13 +56,14 @@ export function detectNewMedia(before = {}, after = {}) {
 async function snapshotMedia(page) {
   try {
     return await page.evaluate(() => {
-      const count = document.querySelectorAll('img,video').length;
+      const media = [...document.querySelectorAll('flow-image-tile img, flow-video-tile video, img[data-media-id], video[data-media-id]')];
+      const count = media.length;
       const ids = [...new Set(
-        [...document.querySelectorAll('img')].map((img) => {
-          const m = String(img.src || '').match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
+        media.filter(el => el.tagName === 'IMG').map((img) => {
+          const m = String(img.src || '').match(/(?:media\.getMediaUrlRedirect\?name=|flow-content\.google\/image\/)([a-f0-9-]+)/);
           return m ? m[1] : null;
         }).filter(Boolean)
-          .concat([...document.querySelectorAll('video')].map((v) => v.currentSrc || v.src || '').filter(Boolean)),
+          .concat(media.filter(el => el.tagName === 'VIDEO').map((v) => v.currentSrc || v.src || '').filter(Boolean)),
       )];
       const tiles = [...new Set(
         [...document.querySelectorAll('[data-asset-id]')].map((el) => el.getAttribute('data-asset-id')).filter(Boolean),
@@ -109,6 +102,10 @@ export async function handleGenerateConfirm(args = {}) {
   if (state.settings_verification && state.settings_verification.verified === false) {
     throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, `Job ${rawId} settings unverified; refusing paid click`);
   }
+  if (Object.values(state.frame_verification || {}).some(frame => frame.verified !== true)
+    || state.references?.verified === false || state.ingredients_failed?.length) {
+    throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, `Job ${rawId} references or frame slots unverified; refusing paid click`);
+  }
 
   const job = jobQueue.createJob(state.type === 'image' ? 'image_confirm' : state.type === 'video' ? 'video_confirm' : 'character_confirm', {
     preparedJobId: rawId.trim(), model: state.model_used, max_credits: maxCredits,
@@ -126,10 +123,14 @@ export async function handleGenerateConfirm(args = {}) {
       }
       return null;
     }).catch(() => null);
-    let quote = { total: 0, state: 'unquoted', raw: costText };
+    let quote = { total: null, state: 'unquoted', raw: costText };
     if (costText) {
       const parsed = parseCostLabel(costText, { quantity: state.quantity || 1 });
       if (parsed.state === 'known') quote = { total: parsed.totalUpperBound, state: 'known', raw: costText };
+    }
+    if (quote.state !== 'known') {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+        'Credit cost could not be verified. No Generate click made; an unknown quote is not zero credits.', { quote });
     }
     if (quote.total > maxCredits) {
       throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
@@ -150,9 +151,8 @@ export async function handleGenerateConfirm(args = {}) {
     logger.info('Generate clicked', { jobId: job.id, preparedJobId: rawId, quote });
     // Short-wait + poll: watch briefly with early exit on the FIRST
     // new-output signal (count, media id, or gallery tile). Never holds the
-    // full render — the local queue job completes immediately on return and
-    // the caller polls flow_queue_status (hasActiveJob=false +
-    // history status) then flow_download_latest. No auto-download here.
+    // full render. Local queue completion releases the handler only;
+    // verify remote readiness before download. No auto-download here.
     // Character titles are editable during rendering; allow immediate rename.
     const deadline = Date.now() + (state.type === 'character' ? 0 : waitMs);
     let after = before;
@@ -173,17 +173,16 @@ export async function handleGenerateConfirm(args = {}) {
     }
     await takeScreenshot(page, 'confirm-after');
 
-    const quoteLabel = quote.state === 'known' ? `${quote.total} credits` : 'unquoted, expected ~0 for images';
-    const pollHint = 'Poll flow_queue_status until hasActiveJob=false, then check history status=completed for this job id, then call flow_download_latest. Do not re-click Generate.';
-    jobQueue.completeJob(job.id, { status: detected ? 'completed' : 'submitted', type: state.type, preparedJobId: rawId,
+    const quoteLabel = `${quote.total} credits`;
+    const pollHint = 'Local queue completion only means the submission handler finished, not that Flow finished rendering. Verify the new remote asset is ready before calling flow_download_latest. Do not re-click Generate.';
+    jobQueue.completeJob(job.id, { status: detected ? 'output_detected' : 'submitted', type: state.type, preparedJobId: rawId,
       jobId: job.id, model_used: state.model_used, quote,
       mediaBefore: before, mediaAfter: after, detected,
+      remoteStatus: detected ? 'output_detected' : 'pending',
       waitMs, requestedWaitMs, waitClamped,
       pollHint,
-      next: detected
-        ? { poll: 'flow_queue_status', until: 'hasActiveJob=false and history status=completed', then: 'flow_download_latest' }
-        : { poll: 'flow_queue_status', until: 'hasActiveJob=false and history status=completed', then: 'flow_download_latest', note: 'No new output within the short window; the Flow render may still be running — poll before downloading, never re-click blindly.' },
-      message: `Generate clicked (${quoteLabel}). ${detected ? 'New output detected — poll flow_queue_status until hasActiveJob=false + status=completed, then flow_download_latest.' : `No new output within the short ${waitMs}ms window${waitClamped ? ` (requested ${requestedWaitMs}ms clamped to the ${GENERATE_CONFIRM_MAX_WAIT_MS}ms short ceiling)` : ''}; the render may still be running — ${pollHint}`} `});
+      next: { inspect: 'flow_screenshot', until: 'new remote asset visibly ready (not local queue completion)', then: 'flow_download_latest', note: pollHint },
+      message: `Generate clicked (${quoteLabel}). ${detected ? 'New output signal detected; remote render readiness still requires verification.' : `No new output within the short ${waitMs}ms window.`} ${pollHint}` });
     return jobQueue.getJob(job.id).result;
   } catch (err) {
     try { await takeScreenshot(getPage(), 'generate-confirm-error'); } catch { /* ok */ }

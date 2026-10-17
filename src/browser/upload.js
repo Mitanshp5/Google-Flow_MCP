@@ -195,6 +195,57 @@ export async function readUploadAck(page, expectedNames = []) {
   }
 }
 
+// Current Flow picker exposes the upload filename and a stable CDN media ID.
+// Preserve that mapping, then verify the SAME ID in the composer, not merely
+// a matching library thumbnail or input.files (Flow removes its input).
+export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [] } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let identities = [];
+  do {
+    identities = await page.evaluate(() => [...document.querySelectorAll('flow-add-menu-asset-item, flow-image-tile')].map(el => {
+      const name = el.querySelector('.asset-title, .footer-title')?.textContent?.trim();
+      const src = el.querySelector('img')?.src || '';
+      const match = src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
+      return { name, title: name, assetId: match?.[1] || null };
+    }).filter((a, i, all) => all.findIndex(b => b.name === a.name && b.assetId === a.assetId) === i)).catch(() => []);
+    identities = identities.filter(a => !excludeAssetIds.includes(a.assetId));
+    if (names.every(name => identities.filter(a => a.name === name && a.assetId).length === 1)) break;
+    await page.waitForTimeout(500);
+  } while (Date.now() < deadline);
+  const selected = [];
+  for (const name of names) {
+    const matches = identities.filter(a => a.name === name && a.assetId);
+    if (matches.length !== 1) return { verified: false, acknowledged: [], reason: `Upload still pending or ambiguous: ${name}` };
+    selected.push(matches[0]);
+  }
+  for (let i = 0; i < selected.length; i++) {
+    const alreadyAttached = await page.locator('flow-prompt-box flow-ingredient-chip img').evaluateAll((imgs, id) => imgs.some(img => {
+      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
+      return match?.[1] === id;
+    }), selected[i].assetId);
+    if (alreadyAttached) continue;
+    const item = page.locator('flow-add-menu-asset-item').filter({ has: page.getByText(selected[i].name, { exact: true }) });
+    if (!await item.isVisible().catch(() => false) && !await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS)) {
+      return { verified: false, acknowledged: [], reason: 'Cannot reopen ingredient picker' };
+    }
+    if (await item.count() !== 1) return { verified: false, acknowledged: [], reason: 'Uploaded item is ambiguous or missing' };
+    await item.click();
+    await page.getByRole('button', { name: 'Add to prompt', exact: true }).click();
+  }
+  const acknowledged = [];
+  for (const identity of selected) {
+    const chip = page.locator('flow-prompt-box flow-ingredient-chip img');
+    const ids = await chip.evaluateAll(imgs => imgs.map(img => {
+      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
+      return match?.[1];
+    }));
+    if (ids.includes(identity.assetId)) acknowledged.push(identity);
+  }
+  await page.keyboard.press('Escape');
+  return { verified: acknowledged.length === names.length, acknowledged,
+    reason: acknowledged.length === names.length ? null : 'Uploaded assets not all present in the composer' };
+}
+
 // End-to-end upload: local validation/hash → real chooser.setFiles →
 // acknowledgement with stable identity scoped to picker/composer.
 // Uncertain acknowledgement stays unverified; no fake mock identity.
@@ -236,6 +287,9 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
       projectId: opts.projectId ?? null,
     });
   }
+  const baselineIds = await page.evaluate(() => [...document.images].map(img =>
+    img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i)?.[1]
+  ).filter(Boolean)).catch(() => []);
   const opened = await openUploadPicker(page);
   if (!opened.fileChooser) {
     return { requested, verified: false, reason: opened.error, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: false };
@@ -260,7 +314,13 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
     inputAccepted = 0;
   }
   void inputLocator;
-  const acknowledged = await readUploadAck(page, requested);
+  let acknowledged = await readUploadAck(page, requested);
+  if (!acknowledged.length && await page.locator('flow-add-menu, flow-add-menu-asset-item').count().catch(() => 0)) {
+    const attached = await attachUploadedPickerAssets(page, requested, {...opts, excludeAssetIds: baselineIds});
+    acknowledged = attached.acknowledged;
+    if (!attached.verified) return { requested, localRecords, inputAccepted, acknowledged,
+      fileChooserSeen: true, verified: false, reason: attached.reason, notes: [attached.reason] };
+  }
   const ack = summarizeUploadAck({ requested, fileChooserSeen: true, inputAccepted, acknowledged });
   return { requested, localRecords, inputAccepted, acknowledged, fileChooserSeen: true, verified: ack.verified, notes: ack.notes };
 }

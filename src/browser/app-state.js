@@ -12,7 +12,7 @@ import { isFlowUrl } from '../utils/sanitize.js';
 //   never shell or account evidence.
 
 export const SHELL_MARKERS = [
-  /<nav\b[^>]*>|<mat-list-item\b/i,
+  /<nav\b[^>]*>|<mat-list-item\b|<mat-nav-list\b[^>]*\brole\s*=\s*["']navigation["']/i,
   /<textarea\b[^>]*>|contenteditable\s*=\s*["']true["']/i,
 ];
 
@@ -33,7 +33,7 @@ export function stripNonVisible(html) {
 }
 
 function hasSidebarScope(visibleHtml) {
-  return /<nav\b[^>]*>|<mat-list-item\b/i.test(visibleHtml);
+  return SHELL_MARKERS[0].test(visibleHtml);
 }
 
 function hasComposerControl(visibleHtml) {

@@ -28,6 +28,12 @@ function selectVideoModel(requested) {
   return r ? r : null;
 }
 
+export function isVideoPreparationVerified({ settingsVerified, attachVerified, frames = {}, failedMentions = [], failedSettings = [] }) {
+  return settingsVerified === true && attachVerified === true
+    && Object.values(frames).every(frame => frame.verified === true)
+    && failedMentions.length === 0 && failedSettings.length === 0;
+}
+
 /**
  * Pure live-poll ceiling (P1-1), unit-tested. The job watchdog
  * (jobTimeoutMs) fires on its own timer while the handler polls, so the
@@ -45,7 +51,7 @@ function resolveFrame(p, label) {
   if (!p) return null;
   const abs = resolveSafePath(p);
   if (!fs.existsSync(abs)) {
-    throw new FlowError(ErrorCodes.INVALID_PARAMS, `${label} not found: ${p}`);
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, `${label} not found: ${p}. In JSON or JavaScript tool calls, use forward slashes (C:/folder/image.jpg) or escape each backslash.`);
   }
   const stat = fs.statSync(abs);
   if (!stat.isFile() || stat.size > 25 * 1024 * 1024) {
@@ -333,7 +339,8 @@ export async function handleGenerateVideo(args) {
       frameVerification[key] = {
         requested: path.basename(abs),
         slot_detected: 'unknown',
-        verified: attachVerified,
+        upload_verified: attachVerified,
+        verified: false,
       };
     };
     pushFrameEntry('start_frame', startFrame);
@@ -386,6 +393,12 @@ export async function handleGenerateVideo(args) {
     // 2. model selected via tune panel + read back, or already showing
     // 3. prompt read-back already passed above
     if (args.confirm_generate === true) {
+      if (!attachVerified || Object.values(frameVerification).some(frame => !frame.verified)
+        || !settingsVerification.verified || mentionResults.failed.length || barFailed.length) {
+        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+          'Video preparation is unverified (settings, uploads, frame slots or ingredients). No Generate click made.',
+          { frameVerification, settingsVerification });
+      }
       assertUiCurrent(epoch);
 
       const pageHtml = await page.content().catch(() => '');
@@ -491,6 +504,10 @@ export async function handleGenerateVideo(args) {
       output_dir: outputDir,
     };
 
+    const preparationVerified = isVideoPreparationVerified({ settingsVerified: settingsVerification.verified,
+      attachVerified, frames: frameVerification, failedMentions: mentionResults.failed, failedSettings: barFailed });
+    if (!preparationVerified) warnings.push('Preparation is unverified. Correct settings, reference uploads and slot assignments before generating.');
+
     saveMetadata(job.id, {
       type: 'video',
       model,
@@ -507,12 +524,12 @@ export async function handleGenerateVideo(args) {
       ingredients_inserted: mentionResults.inserted,
       ingredients_failed: mentionResults.failed,
       qc,
-      status: settingsVerification.verified ? 'ready_for_confirmation' : 'prepared_unverified',
+      status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       note: 'Video generation is a paid feature. Manual confirmation required to proceed.',
     });
 
     jobQueue.completeJob(job.id, {
-      status: settingsVerification.verified ? 'ready_for_confirmation' : 'prepared_unverified',
+      status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
       jobId: job.id,
       account: get('expectedAccount'),
@@ -536,7 +553,9 @@ export async function handleGenerateVideo(args) {
       settings_verification: settingsVerification,
       qc_warnings: warnings,
       frame_notes: frameNotes,
-      message: 'Video generation setup complete (hero-frame + ingredients + frames QC passed). Manual confirmation required (uses credits).' +
+      message: (preparationVerified
+        ? 'Video prompt and settings verified. Not submitted; confirmation uses credits.'
+        : 'Video prompt prepared, but verification is incomplete. Do not generate until the reported issues are corrected.') +
         (warnings.length ? ` Warnings: ${warnings.join(' | ')}` : ''),
       screenshot: await takeScreenshot(page, 'video-ready'),
     });

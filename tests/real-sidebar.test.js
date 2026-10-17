@@ -104,6 +104,15 @@ async function newLocalPage(html, url = LOCAL_PROJECT_URL) {
 }
 
 describe('real sidebar live-derived repair (local fixtures only)', () => {
+  it('navigates current button[mat-list-item] controls, not just custom elements', async () => {
+    const html = localMaterialFixture().replaceAll('<mat-list-item ', '<button mat-list-item ').replaceAll('</mat-list-item>', '</button>')
+      .replaceAll('mat-nav-list[role="navigation"] mat-list-item', 'mat-nav-list[role="navigation"] button[mat-list-item]');
+    const page = await newLocalPage(html);
+    try {
+      expect((await navigateSidebarDetailed(page, 'Images', {pollMs: 1000})).ok).toBe(true);
+      expect(await getActiveSidebarSection(page)).toBe('Images');
+    } finally { await page.close(); }
+  });
   it('reads Images selection via exact activated class + owning label', async () => {
     const page = await newLocalPage(localMaterialFixture({ selected: 'Images' }));
     try {
@@ -164,6 +173,17 @@ describe('real sidebar live-derived repair (local fixtures only)', () => {
       await page.close();
     }
   }, 30000);
+
+  it('verifies the actual Tools gallery without requiring a generation composer', async () => {
+    const html = localMaterialFixture().replace('<textarea placeholder="Describe"></textarea>', '');
+    const page = await newLocalPage(html, LOCAL_PROJECT_URL + '/tools');
+    try {
+      const result = await navigateSidebarDetailed(page, 'Tools', {pollMs: 1000});
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      await page.getByRole('button', {name: 'Templates', exact: true}).evaluate(el => el.remove());
+      expect((await navigateSidebarDetailed(page, 'Tools', {pollMs: 1000})).ok).toBe(false);
+    } finally { await page.close(); }
+  });
 
   it('navigates Tools route with gallery readiness via boolean caller (not nav.ok)', async () => {
     const page = await newLocalPage(localMaterialFixture({ selected: 'All media' }));

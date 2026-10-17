@@ -24,7 +24,7 @@ vi.mock('../src/utils/screenshots.js', () => ({
 import { jobQueue } from '../src/queue/job-queue.js';
 import { handleGenerateConfirm } from '../src/tools/generate-confirm.js';
 
-function makeFakePage({ baseline, after, costText = null }) {
+function makeFakePage({ baseline, after, costText = '1 credits total' }) {
   let snapshotCalls = 0;
   return {
     evaluate: async (fn) => {
@@ -69,15 +69,15 @@ describe('handleGenerateConfirm short-wait handler', () => {
 
     expect(globalThis.__confirmClicked).toBe(true);
     expect(result.detected).toBe(true);
-    expect(result.status).toBe('completed');
+    expect(result.status).toBe('output_detected');
     // Long window clamped to the short ceiling.
     expect(result.waitMs).toBe(30000);
     expect(result.requestedWaitMs).toBe(120000);
     expect(result.waitClamped).toBe(true);
     // Caller contract: poll queue, then download.
-    expect(result.next.poll).toBe('flow_queue_status');
+    expect(result.next.inspect).toBe('flow_screenshot');
     expect(result.next.then).toBe('flow_download_latest');
-    expect(result.pollHint).toMatch(/flow_queue_status/);
+    expect(result.pollHint).toMatch(/not that Flow finished rendering/);
     // Queue is free immediately — hasActiveJob=false, history completed.
     const qs = jobQueue.getStatus(5);
     expect(qs.hasActiveJob).toBe(false);
@@ -97,14 +97,31 @@ describe('handleGenerateConfirm short-wait handler', () => {
     const snap = { count: 3, ids: ['aaa'], tiles: ['t1'] };
     globalThis.__confirmFakePage = makeFakePage({ baseline: snap, after: { ...snap } });
 
-    const result = await handleGenerateConfirm({ job_id: prep.id, wait_ms: 20000 });
+    const result = await handleGenerateConfirm({ job_id: prep.id, wait_ms: 1000 });
 
     expect(result.detected).toBe(false);
     expect(result.status).toBe('submitted');
-    expect(result.waitMs).toBe(20000);
+    expect(result.waitMs).toBe(1000);
     expect(result.waitClamped).toBe(false);
-    expect(result.next.poll).toBe('flow_queue_status');
+    expect(result.next.inspect).toBe('flow_screenshot');
     expect(result.next.then).toBe('flow_download_latest');
     expect(jobQueue.getStatus(5).hasActiveJob).toBe(false);
   }, 30000);
+
+  it('refuses an unknown quote instead of treating it as zero credits', async () => {
+    const prep = jobQueue.createJob('image_generation', {});
+    jobQueue.startJob(prep.id);
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'image'});
+    globalThis.__confirmFakePage = makeFakePage({baseline: {}, after: {}, costText: null});
+    await expect(handleGenerateConfirm({job_id: prep.id})).rejects.toThrow(/unknown quote is not zero/);
+    expect(globalThis.__confirmClicked).toBe(false);
+  });
+
+  it('refuses unverified frame slots even on an old ready preparation', async () => {
+    const prep = jobQueue.createJob('video_generation', {});
+    jobQueue.startJob(prep.id);
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'video', frame_verification: {start_frame: {verified: false}}});
+    await expect(handleGenerateConfirm({job_id: prep.id})).rejects.toThrow(/frame slots unverified/);
+    expect(globalThis.__confirmClicked).toBe(false);
+  });
 });

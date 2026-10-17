@@ -85,7 +85,7 @@ const TOOL_DEFINITIONS = [
     },
     {
       name: 'flow_generate_confirm',
-      description: 'LIVE PAID CLICK for a prepared job: re-checks the quote against max_credits, clicks Generate, watches briefly (short 20-30s, early exit on new output). Returns immediately; then poll flow_queue_status until hasActiveJob=false + status=completed, then flow_download_latest. Only verified ready_for_confirmation preparations. No auto-download.',
+      description: 'LIVE PAID CLICK for a verified preparation. Requires a known quote within max_credits. Watches briefly after submission; local queue completion does NOT prove remote render completion. Inspect the new remote asset before downloading. No auto-download.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -220,8 +220,10 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_download_latest',
-    description: 'Download the most recently generated file from Google Flow.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'Download a verified latest asset, or an explicit asset_id. Ambiguous ordering returns choices instead of guessing. Saves and verifies media bytes. No generation or upscaling.',
+    inputSchema: { type: 'object', properties: {
+      asset_id: { type: 'string', description: 'Optional exact asset ID from download choices; selects that asset without claiming it is newest.' },
+    } },
   },
   {
     name: 'flow_export_reel',

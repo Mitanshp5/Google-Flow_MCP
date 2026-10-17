@@ -35,6 +35,21 @@ afterAll(async () => {
 });
 
 describe('W04 behavioral list pre-navigation snapshot', () => {
+  it('does not rewrite a prepared composer when chip and slot observation is unknown', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(LIST_FIXTURE.replaceAll('id="chips"', 'id="unobserved-chips"')
+        .replaceAll('id="slots"', 'id="unobserved-slots"')
+        .replaceAll('class="mention-chip"', 'class="unobserved-chip"')
+        .replaceAll('data-chip-id=', 'data-unobserved-chip=').replaceAll('data-slot=', 'data-unobserved-slot='));
+      const res = await handleListMentionOptions({}, {page, ensureProjectFn: async()=>{}, takeScreenshotFn: async()=>null});
+      expect(res.status).toBe('blocked');
+      expect(res.reason).toBe('composer-preservation-unverified');
+      expect(res.composer.state).toBe('unverified');
+      expect(await page.locator('#prompt').textContent()).toBe('prepared prompt');
+      expect(await page.locator('.unobserved-chip').count()).toBe(1);
+    } finally {await page.close();}
+  }, 25000);
   it('navigation wipe of prepared state returns invalidated blocker, not success', async () => {
     const page = await browser.newPage();
     try {

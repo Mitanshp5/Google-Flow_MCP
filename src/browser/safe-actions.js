@@ -1,9 +1,9 @@
-import path from 'path';
 import { get } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { getPage } from './connect.js';
 import { getSelectors } from '../utils/selectors.js';
+import { uploadReferences } from './upload.js';
 
 function actionDelay() {
   return get('actionDelayMs', 800);
@@ -734,55 +734,19 @@ export function summarizeAttachment({ requested = [], inputAccepted = 0, preview
 }
 
 /**
- * Upload local reference/frame files through Flow's file input, then read
- * back that they actually landed (P0-1/P0-2). Returns summarizeAttachment()
- * output. Never throws for UI absence — verified:false lets the caller
- * warn (prepare-only) or refuse the paid click (live).
+ * Open Flow's upload picker before accessing its transient file input.
+ * Acceptance alone does not prove attachment; require app acknowledgement.
  */
 export async function attachReferenceFiles(page, inputLocator, files, opts = {}) {
-  const names = (files || []).map((f) => path.basename(String(f)));
-  const label = opts.label || 'references';
-  if (!files || files.length === 0) return summarizeAttachment({ requested: [] });
-  let scope = null;
-  try {
-    scope = inputLocator ? await promptBarScope(page, inputLocator) : page.locator('body');
-  } catch {
-    scope = page.locator('body');
+  if (files?.length) {
+    const result = await uploadReferences(page, inputLocator, files, opts);
+    return {
+      ...result,
+      attached: result.acknowledged?.length || 0,
+      notes: [...(result.notes || []), ...(result.reason ? [result.reason] : [])],
+    };
   }
-  const countPreviews = async () => {
-    try {
-      return await scope.locator('img, [role="img"]').count();
-    } catch {
-      return 0;
-    }
-  };
-  const previewsBefore = await countPreviews();
-  try {
-    await page.locator('input[type="file"]').first().setInputFiles(files, { timeout: 3000 });
-    await page.waitForTimeout(1500);
-  } catch (e) {
-    logger.warn('Reference attach failed (no file input)', { label, error: e.message });
-    const base = summarizeAttachment({ requested: names, inputAccepted: 0, previewsBefore, previewsAfter: previewsBefore });
-    return { ...base, notes: [...base.notes, `${label}: no file input available (${e.message}); attach manually`] };
-  }
-  // Re-query before read-back: the framework may re-render the input.
-  let inputAccepted = 0;
-  try {
-    inputAccepted = await page.locator('input[type="file"]').first()
-      .evaluate((el) => (el && el.files ? el.files.length : 0));
-  } catch (e) {
-    logger.warn('Reference attach read-back failed', { label, error: e.message });
-  }
-  const previewsAfter = await countPreviews();
-  const out = summarizeAttachment({ requested: names, inputAccepted, previewsBefore, previewsAfter });
-  logger.info('Reference attach result', {
-    label,
-    requested: out.requested,
-    inputAccepted: out.inputAccepted,
-    attached: out.attached,
-    verified: out.verified,
-  });
-  return out;
+  return summarizeAttachment({ requested: [] });
 }
 
 /**
