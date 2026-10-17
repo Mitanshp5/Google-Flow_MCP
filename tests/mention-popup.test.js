@@ -25,7 +25,7 @@ describe('openMentionPopup', () => {
     const page = mockPageRoutes([{ match: 'Search', visible: true }]);
     const out = await openMentionPopup(page, textInput('hello'));
     expect(out).not.toBe(null);
-    expect(page.presses).toContain('End');
+    expect(page.presses).toContain('ControlOrMeta+End');
     expect(page.presses).toContain('type:@');
   });
 

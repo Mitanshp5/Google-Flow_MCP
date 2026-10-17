@@ -2,6 +2,9 @@
 // Snapshot: text + mention-chip asset IDs + slot assignment + pending
 // uploads + settings + account/project. Restore must verify chips/slots;
 // raw innerHTML/text equality alone is never a valid restore claim.
+import {readComposerReferences} from './composer-references.js';
+import {extractObservedAccount} from './app-state.js';
+import {isFlowUrl} from '../utils/sanitize.js';
 function attr(html, name) {
   const m = String(html).match(new RegExp(`${name}\\s*=\\s*"([^"]*)"`, 'i'));
   return m ? m[1] : null;
@@ -78,8 +81,9 @@ export function compareComposerSnapshots(a = {}, b = {}) {
   const accountEqual = (a.account ?? null) === (b.account ?? null);
   const projectEqual = (a.projectId ?? null) === (b.projectId ?? null);
   const bindingObservable = !!a.bindingObservable && !!b.bindingObservable;
-  const equal = textEqual && chipsEqual && slotsEqual && uploadsEqual && settingsEqual && accountEqual && projectEqual;
-  return { textEqual, chipsEqual, slotsEqual, uploadsEqual, settingsEqual, accountEqual, projectEqual, bindingObservable, equal };
+  const structureEqual = (a.editorHtml ?? null) === (b.editorHtml ?? null);
+  const equal = textEqual && structureEqual && chipsEqual && slotsEqual && uploadsEqual && settingsEqual && accountEqual && projectEqual;
+  return { textEqual, structureEqual, chipsEqual, slotsEqual, uploadsEqual, settingsEqual, accountEqual, projectEqual, bindingObservable, equal };
 }
 
 // Failure (or unverified rich state) invalidates prep — never silent success.
@@ -102,7 +106,7 @@ const VERIFIED_CLAIMERS = new Set(['chip-slot-verify', 'ui-verified', 'restore-v
 export function isValidRestoreClaim({ before = {}, after = {}, claimedBy = '' } = {}) {
   if (!VERIFIED_CLAIMERS.has(claimedBy)) return false;
   const cmp = compareComposerSnapshots(before, after);
-  if (!cmp.textEqual || !cmp.chipsEqual || !cmp.slotsEqual) return false;
+  if (!cmp.textEqual || !cmp.structureEqual || !cmp.chipsEqual || !cmp.slotsEqual) return false;
   if (!cmp.uploadsEqual || !cmp.settingsEqual) return false;
   if (!cmp.accountEqual || !cmp.projectEqual) return false;
   if (!cmp.bindingObservable) return false;
@@ -130,8 +134,8 @@ export function hasStrayAt(text = '') {
 export async function readComposerSnapshot(page, inputLocator) {
   let text = '';
   try {
-    text = (await inputLocator.textContent().catch(() => null))
-      ?? (await inputLocator.inputValue?.().catch(() => null))
+    text = (await inputLocator.inputValue?.().catch(() => null))
+      ?? (await inputLocator.textContent().catch(() => null))
       ?? '';
   } catch {
     text = '';
@@ -198,6 +202,21 @@ export async function readComposerSnapshot(page, inputLocator) {
   } catch {
     dom = null;
   }
+  const modern = await readComposerReferences(page).catch(() => null);
+  if (modern && ['frames', 'ingredients'].includes(modern.mode)) {
+    let account = null;
+    let projectId = null;
+    try {
+      account = extractObservedAccount(await page.content());
+      if (isFlowUrl(page.url())) projectId = new URL(page.url()).pathname.match(/^\/project\/([^/]+)(?:\/|$)/)?.[1] || null;
+    } catch { /* unavailable identity stays unverified */ }
+    const editorHtml = await inputLocator.innerHTML().catch(()=>null);
+    return {text:String(text ?? ''), editorHtml, chips:modern.chips, slots:modern.slots, pendingUploads:modern.pendingUploads,
+      settings:{...modern.settings, referenceMode:modern.mode}, account, projectId,
+      chipsObservable:modern.chipsObservable, slotsObservable:modern.slotsObservable,
+      uploadsObservable:true, settingsObservable:!!modern.settings.summary,
+      bindingObservable:!!account && !!projectId, takenAt:Date.now()};
+  }
   if (!dom) {
     return { text: String(text ?? ''), chips: [], slots: {}, pendingUploads: [], settings: {},
       account: null, projectId: null, chipsObservable: false, slotsObservable: false,
@@ -234,7 +253,7 @@ export async function restoreComposerAfterPicker(page, inputLocator, before, { t
   } catch { /* ignore */ }
   try {
     await inputLocator.click().catch(() => {});
-    await page.keyboard.press('End').catch(() => {});
+    await page.keyboard.press('ControlOrMeta+End').catch(() => {});
     await page.waitForTimeout(150);
   } catch { /* ignore */ }
   const delta = String(triggerDelta || '@');
@@ -242,9 +261,15 @@ export async function restoreComposerAfterPicker(page, inputLocator, before, { t
     const cur = (await inputLocator.textContent().catch(() => null))
       ?? (await inputLocator.inputValue?.().catch(() => null)) ?? '';
     if (typeof cur === 'string') {
-      // Remove exactly what we introduced; fall back to a single trailing
-      // '@' so text-only mock surfaces still clean picker residue.
-      const target = delta && cur.endsWith(delta) ? delta : cur.endsWith('@') ? '@' : '';
+      // Current Flow consumes '@' when closing the picker but can leave our
+      // separating space. Delete only a suffix proven against the baseline;
+      // never delete a user's preexisting space or '@'.
+      const baseline = typeof before?.text === 'string' ? before.text : null;
+      const target = baseline !== null
+        ? cur === baseline + delta ? delta
+          : delta === ' @' && (cur === baseline + ' ' || cur === baseline + '\u00a0') ? cur.slice(baseline.length)
+            : cur === baseline + '@' ? '@' : ''
+        : delta && cur.endsWith(delta) ? delta : cur.endsWith('@') ? '@' : '';
       for (let i = 0; i < target.length; i++) {
         await page.keyboard.press('Backspace').catch(() => {});
         await page.waitForTimeout(80);

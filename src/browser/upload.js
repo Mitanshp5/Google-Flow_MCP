@@ -4,6 +4,7 @@
 import fs from 'fs';
 import path from 'path';
 import { validateLocalImport, sha256Hex } from '../assets/catalog.js';
+import {readComposerReferences} from './composer-references.js';
 export const ADD_INGREDIENTS_SELECTORS = [
   'button:has-text("Add ingredients")',
   '[aria-label*="Add ingredients" i]',
@@ -134,8 +135,10 @@ async function clickFirstVisible(page, selectors) {
 // Upload-media click, so the wait MUST be registered BEFORE the click and
 // awaited together — waiting after the click loses the event.
 // Never falls back to blind input[type=file].
-export async function openUploadPicker(page) {
-  const addHit = await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
+export async function openUploadPicker(page, {entryLocator} = {}) {
+  const addHit = entryLocator
+    ? await entryLocator.click({timeout:3000}).then(()=>true).catch(()=>false)
+    : await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
   if (!addHit) return { fileChooser: null, error: 'Add ingredients entry not found' };
   try {
     await page.waitForTimeout(300);
@@ -198,7 +201,7 @@ export async function readUploadAck(page, expectedNames = []) {
 // Current Flow picker exposes the upload filename and a stable CDN media ID.
 // Preserve that mapping, then verify the SAME ID in the composer, not merely
 // a matching library thumbnail or input.files (Flow removes its input).
-export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [] } = {}) {
+export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [], slot = null } = {}) {
   const deadline = Date.now() + timeoutMs;
   let identities = [];
   do {
@@ -219,7 +222,7 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
     selected.push(matches[0]);
   }
   for (let i = 0; i < selected.length; i++) {
-    const alreadyAttached = await page.locator('flow-prompt-box flow-ingredient-chip img').evaluateAll((imgs, id) => imgs.some(img => {
+    const alreadyAttached = !slot && await page.locator('flow-prompt-box flow-ingredient-chip img').evaluateAll((imgs, id) => imgs.some(img => {
       const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
       return match?.[1] === id;
     }), selected[i].assetId);
@@ -230,11 +233,27 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
     }
     if (await item.count() !== 1) return { verified: false, acknowledged: [], reason: 'Uploaded item is ambiguous or missing' };
     await item.click();
-    await page.getByRole('button', { name: 'Add to prompt', exact: true }).click();
+    // Some picker versions insert directly on selection; others require the
+    // preview confirmation. In either case the composer ID/slot below is proof.
+    const add = page.getByRole('button', { name: 'Add to prompt', exact: true });
+    await add.waitFor({state:'visible',timeout:2000}).catch(()=>{});
+    if (await add.isVisible()) await add.click({timeout:3000});
   }
   const acknowledged = [];
   for (const identity of selected) {
+    if (slot) {
+      await page.locator('flow-base-prompt-box .frame-trigger').nth(slot === 'start' ? 0 : 1).locator('img').waitFor({state:'visible',timeout:5000}).catch(()=>{});
+      const refs = await readComposerReferences(page);
+      if (refs?.mode === 'frames' && refs.slotsObservable && refs.slots[slot]?.assetId === identity.assetId) {
+        acknowledged.push({...identity, slot});
+      }
+      continue;
+    }
     const chip = page.locator('flow-prompt-box flow-ingredient-chip img');
+    await page.waitForFunction(id => [...document.querySelectorAll('flow-prompt-box flow-ingredient-chip img')].some(img => {
+      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
+      return match?.[1] === id;
+    }), identity.assetId, {timeout:5000}).catch(()=>{});
     const ids = await chip.evaluateAll(imgs => imgs.map(img => {
       const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
       return match?.[1];
@@ -290,7 +309,7 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
   const baselineIds = await page.evaluate(() => [...document.images].map(img =>
     img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i)?.[1]
   ).filter(Boolean)).catch(() => []);
-  const opened = await openUploadPicker(page);
+  const opened = await openUploadPicker(page, opts);
   if (!opened.fileChooser) {
     return { requested, verified: false, reason: opened.error, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: false };
   }

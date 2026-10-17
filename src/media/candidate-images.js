@@ -135,6 +135,28 @@ function assertResourceBounds({ maxBytes, timeoutMs }) {
   }
 }
 
+// Some FFmpeg builds recognize WebP but cannot count animated WebP frames.
+// Reject a well-formed animation container from the SAME frozen bytes before
+// invoking the decoder. This never accepts a still or replaces full decoding.
+export function hasWebpAnimation(bytes) {
+  if (bytes.length < 12 || bytes.toString('ascii', 0, 4) !== 'RIFF'
+    || bytes.toString('ascii', 8, 12) !== 'WEBP') return false;
+  const end = bytes.readUInt32LE(4) + 8;
+  if (end !== bytes.length) return false;
+  let animated = false;
+  let offset = 12;
+  while (offset + 8 <= end) {
+    const tag = bytes.toString('ascii', offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    const next = offset + 8 + size + (size % 2);
+    if (next > end) return false;
+    if (tag === 'ANIM' || tag === 'ANMF'
+      || (tag === 'VP8X' && size === 10 && (bytes[offset + 8] & 0x02))) animated = true;
+    offset = next;
+  }
+  return offset === end && animated;
+}
+
 // Local path identity: file: URLs resolve via fileURLToPath (correct drive
 // letters and percent escapes); remote file hosts and UNC network paths are
 // rejected (no network reads/uploads). Literal paths are used EXACTLY as
@@ -256,6 +278,12 @@ export async function probeImage(file, { minWidth = 1, minHeight = 1, expectedRa
   const size = bytes.length;
   const mime = verified.mime;
   const ext = W09_MIME_TO_EXT[mime];
+
+  if (mime === 'image/webp' && hasWebpAnimation(bytes)) {
+    throw new FlowError('MEDIA_MULTI_FRAME', 'animated WebP container rejected; exactly one still required', {
+      file: localPath, codec: 'webp', evidence: 'RIFF animation chunks',
+    });
+  }
 
   // Real probe over the SAME frozen bytes: single video stream, exactly one
   // counted frame (full decode via -count_frames), then a full-file ffmpeg

@@ -580,6 +580,20 @@ describe('W09 R1 immutable sheet history (no overwrite)', () => {
 });
 
 describe('W09 R3 frozen-snapshot single-still probe', () => {
+  it('recognizes RIFF animation chunks, not strings inside still-image payloads', async () => {
+    const {hasWebpAnimation} = await import('../src/media/candidate-images.js');
+    const riff = (tag, payload) => {
+      const header = Buffer.alloc(20);
+      header.write('RIFF'); header.writeUInt32LE(12 + payload.length + payload.length % 2, 4);
+      header.write('WEBP', 8); header.write(tag, 12); header.writeUInt32LE(payload.length, 16);
+      return Buffer.concat([header, payload, Buffer.alloc(payload.length % 2)]);
+    };
+    expect(hasWebpAnimation(riff('ANIM', Buffer.alloc(6)))).toBe(true);
+    expect(hasWebpAnimation(riff('ANMF', Buffer.alloc(17)))).toBe(true);
+    expect(hasWebpAnimation(riff('VP8 ', Buffer.from('ANIM ANMF')))).toBe(false);
+    expect(hasWebpAnimation(riff('ANIM', Buffer.alloc(6)).subarray(0, 22))).toBe(false);
+    expect(hasWebpAnimation(Buffer.from('ANIM'))).toBe(false);
+  });
   let dir;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w09-r3-')); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });

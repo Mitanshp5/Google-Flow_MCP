@@ -23,10 +23,15 @@ describe('W09 runtime-data package exclusion', () => {
         fs.writeFileSync(path.join(dir, 'scripts', 'fixture', 'assets', 'originals', 'fixture.png'), 'PRIVATE_LOCAL_FIXTURE_NOT_MEDIA', { flag: 'wx' });
       }
       const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      const result = JSON.parse(execSync(`${npm} pack --dry-run --json`, {
+      const packed = JSON.parse(execSync(`${npm} pack --dry-run --json`, {
         cwd: process.cwd(), env, encoding: 'utf8', timeout: 60000,
       }));
+      // npm versions emit either a package array or a name-keyed object.
+      // Validate the real file listing in both; never skip the privacy check.
+      const result = Array.isArray(packed) ? packed : Object.values(packed);
       expect(result).toHaveLength(1);
+      expect(result[0].name).toBe('google-flow_mcp');
+      expect(Array.isArray(result[0].files)).toBe(true);
       const names = result[0].files.map(f => f.path.replaceAll('\\', '/'));
       expect(names.filter(n => n.includes('w09-private-'))).toEqual([]);
       expect(names.filter(n => n.startsWith('dist/')).sort()).toEqual(['dist/index.js', 'dist/index.js.map']);

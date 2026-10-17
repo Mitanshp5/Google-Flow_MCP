@@ -93,7 +93,7 @@ export async function ensureMentionTriggerSpace(page, inputLocator) {
       ?? (await inputLocator.inputValue?.().catch(() => null)) ?? '';
     if (needsTriggerSpace(text)) {
       await inputLocator.click().catch(() => {});
-      await page.keyboard.press('End').catch(() => {});
+      await page.keyboard.press('ControlOrMeta+End').catch(() => {});
       await page.keyboard.type(' ', { delay: 20 }).catch(() => {});
       await page.waitForTimeout(200);
       return { typedSpace: true };
@@ -156,7 +156,7 @@ export async function openMentionPopup(page, inputLocator) {
     } catch { /* ignore */ }
   }
   await inputLocator.click();
-  await page.keyboard.press('End');
+  await page.keyboard.press('ControlOrMeta+End');
   // W04 F07: punctuation/boundary-aware trigger — a separating space before
   // "@" is required when the prompt does not already end with whitespace.
   const trigger = await ensureMentionTriggerSpace(page, inputLocator);
@@ -283,7 +283,11 @@ export async function listMentionOptionsDetailed(page, inputLocator) {
 
   const names = rawNames.map((t) => stripTypeLabelSuffix(normalizeTitle(t))).filter(Boolean);
 
-  await closeMentionPopup(page, inputLocator, popup.triggerDelta || '@');
+  if (popup.beforeSnapshot) {
+    await restoreComposerAfterPicker(page, inputLocator, popup.beforeSnapshot, {triggerDelta:popup.triggerDelta || '@'});
+  } else {
+    await closeMentionPopup(page, inputLocator, popup.triggerDelta || '@');
+  }
   if (names.length === 0) return { status: 'empty', names, reason: 'picker opened with no rows' };
   return { status: 'ok', names, reason: 'picker opened' };
 }

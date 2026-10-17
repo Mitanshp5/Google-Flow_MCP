@@ -19,6 +19,7 @@ import { extractObservedAccount } from '../browser/app-state.js';
 import { parseCostLabel } from '../browser/cost-quote.js';
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
+import {setVideoReferenceMode, attachVideoFrame} from '../browser/video-frames.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -78,8 +79,9 @@ export async function handleGenerateVideo(args) {
   const startFrame = resolveFrame(args.start_frame || args.hero_frame, 'start_frame');
   const endFrame = resolveFrame(args.end_frame, 'end_frame');
   const anchorFrame = args.anchor_frame ? resolveFrame(args.anchor_frame, 'anchor_frame') : null;
-  const refPaths = [...(args.start_frame ? [startFrame] : (args.hero_frame ? [startFrame] : [])),
-    ...(args.end_frame ? [endFrame] : []), ...(anchorFrame ? [anchorFrame] : [])];
+  const frameStart = startFrame || anchorFrame;
+  const hasFrames = Boolean(frameStart || endFrame);
+  const refPaths = [frameStart, endFrame].filter(Boolean);
   const uploadRefs = Array.isArray(args.reference_images) ? args.reference_images : [];
   const resolvedUploads = [];
   for (const p of uploadRefs) {
@@ -87,6 +89,12 @@ export async function handleGenerateVideo(args) {
   }
   // P0-6: shared @name collection (same order/semantics as the image tool).
   const mentionNames = collectMentionNames(args);
+  if (hasFrames && (resolvedUploads.length || mentionNames.length)) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'Flow Frames and Ingredients are separate modes. Use start/end frames OR reference_images/ingredients, not both.');
+  }
+  if (startFrame && anchorFrame && startFrame !== anchorFrame) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'anchor_frame is a fallback start frame; it cannot differ from an explicit start_frame.');
+  }
   if (mentionNames.length > 3) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, `Flow supports max 3 ingredients per prompt; got ${mentionNames.length}. Trim to the 3 strongest (face + location + prop/style).`);
   }
@@ -231,9 +239,11 @@ export async function handleGenerateVideo(args) {
     const wantQuality = args.quality || get('defaultQuality', '720p');
     const quality = liveQualities.find(q => String(q).toLowerCase() === String(wantQuality).toLowerCase());
     const modeRes = await setPromptBarMode(page, 'Video');
+    const referenceModeRes = hasFrames || resolvedUploads.length || mentionNames.length
+      ? await setVideoReferenceMode(page, hasFrames ? 'frames' : 'ingredients') : null;
     const modelRes = await setPromptBarModel(page, model);
     const barSets = [
-      modeRes, modelRes,
+      modeRes, ...(referenceModeRes ? [referenceModeRes] : []), modelRes,
       ...(quality ? [] : [{ ok: false, verified: false, kind: 'quality', detail: `quality "${wantQuality}" not in live list (${liveQualities.join('/')})` }]),
       ...await configurePromptBar(page, {
         ratio, quantity: qty,
@@ -254,7 +264,12 @@ export async function handleGenerateVideo(args) {
     // mode: no credits are spent, and the new Flow chat UI may not expose
     // classic mode/ratio/duration tabs until a prompt is entered. Live
     // generation (auto_confirm=true) must throw on mismatch instead.
-    const uiResult = await configureGenerationUI({
+    // The current prompt-bar driver already read back every setting. Do not
+    // run the obsolete tab driver over a verified radio-button UI and emit
+    // false "tab not found" errors (or mutate the settings a second time).
+    const uiResult = barSets.every(s => s.ok && s.verified)
+      ? {ok:true, verified:barSets.map(s=>s.kind), failures:[]}
+      : await configureGenerationUI({
       mode: 'Video',
       ratio,
       model,
@@ -321,31 +336,46 @@ export async function handleGenerateVideo(args) {
     const frameFiles = [...refPaths, ...resolvedUploads];
     let attachAccepted = 0;
     let attachVerified = true;
-    if (frameFiles.length > 0) {
+    const attachmentResults = {};
+    if (hasFrames) {
+      for (const [slot, file] of [['start', frameStart], ['end', endFrame]]) {
+        if (!file) continue;
+        const attach = referenceModeRes?.verified
+          ? await attachVideoFrame(page, file, slot)
+          : {verified:false, notes:['Frames mode selection failed; no frame upload attempted'], acknowledged:[]};
+        attachmentResults[slot] = attach;
+        attachAccepted += attach.inputAccepted || 0;
+        attachVerified = attachVerified && attach.verified;
+        frameNotes.push(...(attach.notes || []));
+      }
+    } else if (frameFiles.length > 0) {
       const attach = await attachReferenceFiles(page, promptInput, frameFiles, { label: 'frames' });
+      attachmentResults.ingredients = attach;
       attachAccepted = attach.inputAccepted;
       attachVerified = attach.verified;
       frameNotes.push(...attach.notes);
-      frameNotes.push('Slot identity (start/end/ingredient) is not yet auto-verified: if Flow did not auto-assign, select Video Frames/Ingredients slots manually.');
       logger.info('Frames/references attach result', { accepted: attachAccepted, verified: attachVerified });
     }
 
-    // P0-2: per-file verification record. slot_detected stays 'unknown'
-    // until slot markers are calibrated against the live DOM (follow-up);
-    // verified tracks landing (input accepted every file), not placement.
+    // Per-file stable identity AND placement proof. An uploaded ingredient
+    // never counts as a start/end frame without its explicit slot acknowledgement.
     const frameVerification = {};
-    const pushFrameEntry = (key, abs) => {
+    const pushFrameEntry = (key, abs, slot = 'ingredients') => {
       if (!abs) return;
+      const result = attachmentResults[slot];
+      const ack = result?.acknowledged?.find(a => a.name === path.basename(abs));
+      const verified = result?.verified === true && !!ack?.assetId && (slot === 'ingredients' || ack.slot === slot);
       frameVerification[key] = {
         requested: path.basename(abs),
-        slot_detected: 'unknown',
-        upload_verified: attachVerified,
-        verified: false,
+        slot_detected: verified ? (slot === 'ingredients' ? 'ingredient' : slot) : 'unknown',
+        assetId: ack?.assetId || null,
+        upload_verified: result?.verified === true,
+        verified,
       };
     };
-    pushFrameEntry('start_frame', startFrame);
-    pushFrameEntry('end_frame', endFrame);
-    pushFrameEntry('anchor_frame', anchorFrame);
+    pushFrameEntry('start_frame', startFrame, 'start');
+    pushFrameEntry('end_frame', endFrame, 'end');
+    pushFrameEntry('anchor_frame', anchorFrame, 'start');
     resolvedUploads.forEach((f, i) => pushFrameEntry(`reference_images[${i}]`, f));
 
     // Insert "@" references — fail closed: zero inserts with required names blocks.
