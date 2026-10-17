@@ -1,5 +1,5 @@
-// Internal scoped fixture integration. Neither MCP arguments nor config/env
-// select this transport. Production continues through the adapter's early deny.
+// Shared observed submission evidence. Internal fixtures supply scoped
+// transport; explicit image/video confirmations supply live authorization.
 import { getSessionScope } from '../browser/session-scope.js';
 import { readToolState, openBarSettings, closeSettingsPanel, isVerifiedSettingsPanel } from '../browser/safe-actions.js';
 import { readComposerSnapshot } from '../browser/composer-state.js';
@@ -19,18 +19,27 @@ function deny(binding) {
  * The authorization carries intended identity, registry and transport only;
  * observed identity/settings/quote/capability timestamps never come from it.
  */
-export async function buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator, refs = [], mentionNames = [] }) {
-  const trusted = getSessionScope()?.handlerSubmission;
+export async function buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator, refs = [], mentionNames = [], liveAuthorization = null }) {
+  const trusted = getSessionScope()?.handlerSubmission ?? liveAuthorization;
+  const live = trusted?.origin === 'live-browser' && trusted === liveAuthorization;
   const trustedPage = trusted?.page?.[Symbol.for('flow.originalPage')] ?? trusted?.page;
   const actualPage = page?.[Symbol.for('flow.originalPage')] ?? page;
   if (!trusted || trustedPage !== actualPage || typeof trusted.submit !== 'function' ||
-      typeof trusted.origin !== 'string' || !trusted.origin.startsWith('local-fixture:')) {
+      typeof trusted.origin !== 'string' || (!live && !trusted.origin.startsWith('local-fixture:'))) {
     return { executionMode: 'production' };
   }
   assertUiCurrent(epoch);
   // Existing upload readback proves file acceptance, not remote identity.
   // A path/name alone cannot authorize an asset's content/slot binding.
-  if (refs.length) deny('local-reference-identity-unavailable');
+   if (refs.length) deny('local-reference-identity-unavailable');
+  if (live && mentionNames.length) {
+    const selected = await readComposerSnapshot(page, inputLocator);
+    trusted.referenceBindings = mentionNames.map(title => {
+      const matches = selected.chips.filter(chip => chip.title === title && chip.assetId);
+      if (matches.length !== 1) deny('reference-identity-role');
+      return { assetId: matches[0].assetId, title, role: 'ingredient' };
+    });
+  }
   const approvedReferences = trusted.referenceBindings ?? [];
   if (!Array.isArray(approvedReferences) || approvedReferences.length !== mentionNames.length) deny('reference-set');
   for (let i = 0; i < mentionNames.length; i++) {
@@ -48,8 +57,13 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
     observed = await opened.panel.evaluate(root => {
       const controls = [...root.querySelectorAll('button, [role="option"], [role="menuitem"], [role="tab"]')];
       const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-      const selected = el => ['aria-pressed', 'aria-checked', 'data-selected'].some(a => el.getAttribute(a) === 'true') || el.getAttribute('data-state') === 'on';
-      const rows = controls.filter(visible).map(el => ({ text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' '), enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true', selected: selected(el), modelRow: /menu-trigger/.test(String(el.className)) }));
+      const selected = el => ['aria-pressed', 'aria-checked', 'aria-selected', 'data-selected'].some(a => el.getAttribute(a) === 'true') || el.getAttribute('data-state') === 'on';
+      const label = el => {
+        const copy = el.cloneNode(true);
+        copy.querySelectorAll('mat-icon, [aria-hidden="true"]').forEach(icon => icon.remove());
+        return (copy.textContent || '').trim().replace(/\s+/g, ' ');
+      };
+      const rows = controls.filter(visible).map(el => ({ text: label(el), enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true', selected: selected(el), modelRow: /menu-trigger/.test(String(el.className)) }));
       // Read one owned leaf label; page-wide footer/grid numbers are not quotes.
       const labels = [...root.querySelectorAll('*')].filter(el => visible(el) && el.children.length === 0)
         .map(el => (el.innerText || el.textContent || '').trim()).filter(t => /credits?/i.test(t));
@@ -61,7 +75,7 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
   }
   if (!structure?.isSettings || !structure.structure || !observed) deny('capabilities-unreadable');
   const row = observed.rows.find(r => r.modelRow);
-  const observedModel = row?.text.replace(/arrow_drop_down|arrow_drop_up/g, '').trim();
+  const observedModel = row?.text.replace(/arrow_drop_down|arrow_drop_up/g, '').trim().replace(/^[\p{Extended_Pictographic}\p{So}\uFE0F]+\s*/u, '').trim();
   const mode = observed.rows.find(r => r.selected && /^(Image|Video)$/i.test(r.text));
   const feature = mode?.text.toLowerCase();
   const dimensions = [requestPayload.ratio, `x${requestPayload.quantity}`, requestPayload.duration, requestPayload.quality].filter(Boolean);
@@ -72,8 +86,14 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
   // consistently, rather than refreshing any cached catalog entry.
   capabilityRecord.observedAt = new Date(panelObservedAt).toISOString();
   const parsed = observed.labels.length === 1 ? parseCostLabel(observed.labels[0], { quantity: requestPayload.quantity }) : null;
-  const quote = parsed?.state === 'known' ? {
-    total: parsed.totalUpperBound, unit: parsed.unit, perGeneration: parsed.unit === 'per-generation' ? parsed.amount : undefined,
+  // With exactly one output, per-generation and batch-total amounts coincide.
+  // This does not guess pricing units for multi-output requests.
+  const singleTotal = live && requestPayload.quantity === 1 && parsed?.unit === 'unknown-ambiguous' && Number.isFinite(parsed.amount);
+  const quote = parsed?.state === 'known' || singleTotal ? {
+    // A zero amount has exactly the same total for every possible unit. Keep
+    // the raw label as evidence. Nonzero batch-unit ambiguity still blocks.
+    total: parsed.totalUpperBound, unit: singleTotal || (parsed.isZero && parsed.unit === 'unknown-ambiguous-zero') ? 'total' : parsed.unit,
+    ...(parsed.unit === 'per-generation' ? { perGeneration: parsed.amount } : {}),
     model: observedModel, feature, quantity: parsed.quantity, raw: parsed.raw,
     observedAt: panelObservedAt, expiresAt: panelObservedAt + QUOTE_MAX_AGE_MS,
   } : null;
@@ -89,7 +109,17 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
     return el.tagName === 'VIDEO' ? src : src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/)?.[1];
   }).filter(Boolean))]);
   const baseline = { ids, observedAt: Date.now(), origin: `${trusted.origin}:visible-media-dom` };
-  if (snapshot.text !== requestPayload.prompt) deny('prompt');
+  // Current Flow renders ingredient chips inside the editable prompt. Their
+  // labels are references (verified independently below), not prompt prose.
+  let observedPrompt = snapshot.text;
+  if (live && mentionNames.length) {
+    observedPrompt = await inputLocator.evaluate(root => {
+      const copy = root.cloneNode(true);
+      copy.querySelectorAll('flow-ingredient-chip, .mention-chip, [data-chip-id]').forEach(chip => chip.remove());
+      return (copy.textContent || '').trim();
+    });
+  }
+  if (observedPrompt !== requestPayload.prompt) deny('prompt');
   if (!snapshot.chipsObservable || !snapshot.slotsObservable || !snapshot.uploadsObservable || snapshot.pendingUploads.length || Object.keys(snapshot.slots).length) deny('reference-observation');
   const actualReferences = snapshot.chips.map(({ assetId, title }) => ({ assetId, title, role: 'ingredient' }));
   if (!deepEqual(actualReferences, approvedReferences)) deny('references');
@@ -108,6 +138,7 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
     capabilities: { status: state.state === 'supported' ? 'verified' : 'unverified', observedAt: panelObservedAt, origin: capabilityRecord.evidence },
     references: { status: 'verified', observedAt: snapshot.takenAt, origin: `${trusted.origin}:composer-chip-slot-upload-readback` },
   };
+  if (live) trusted.approve(payload, quote);
   const policyContext = {
     account: { expected: trusted.expectedAccount, observed: observedAccount, verified: !!observedAccount, observedAt: accountObservedAt },
     project: { requiredId: trusted.intendedProjectId, observedId: observedProjectId },
@@ -116,7 +147,7 @@ export async function buildHandlerSubmissionContext({ page, epoch, requestPayloa
   };
   assertUiCurrent(epoch);
   return {
-    executionMode: 'local-fixture', requestPayload: payload, observedAccount, observedProjectId,
+    executionMode: live ? 'live-browser' : 'local-fixture', requestPayload: payload, observedAccount, observedProjectId,
     verifiedSettings, quote, baseline, policyContext, approvalChild: trusted.approvalChild,
     approvals: trusted.approvals, ledger: trusted.ledger, opStore: trusted.opStore,
     remoteSubmitFn: async invocation => {

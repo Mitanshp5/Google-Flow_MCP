@@ -19,6 +19,7 @@ import { extractObservedAccount } from '../browser/app-state.js';
 import { parseCostLabel } from '../browser/cost-quote.js';
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
+import { createLiveAuthorization } from '../domain/live-submission.js';
 import {setVideoReferenceMode, attachVideoFrame} from '../browser/video-frames.js';
 import fs from 'fs';
 import path from 'path';
@@ -502,9 +503,10 @@ export async function handleGenerateVideo(args) {
         inputLocator: promptInput,
         refs: frameFiles,
         mentionNames,
+        liveAuthorization: createLiveAuthorization({ page, confirmed: args.confirm_generate === true, maxCredits: args.max_credits ?? 2 }),
       });
 
-      return await executeDurableSubmission({
+      const submitted = await executeDurableSubmission({
         page,
         epoch,
         opStore: createOperationStore(getFlowHome()),
@@ -517,6 +519,8 @@ export async function handleGenerateVideo(args) {
         quote,
         ...submissionContext,
       });
+      jobQueue.completeJob(job.id, submitted);
+      return { ...submitted, jobId: job.id };
     }
 
     const qc = {

@@ -16,6 +16,7 @@ import { extractObservedAccount } from '../browser/app-state.js';
 import { parseCostLabel } from '../browser/cost-quote.js';
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
+import { createLiveAuthorization } from '../domain/live-submission.js';
 import fs from 'fs';
 
 function selectModel(requested) {
@@ -72,6 +73,7 @@ export async function handleGenerateImage(args) {
       campaign: args.campaign,
       project_url: args.project_url,
     });
+    const liveAuthorization = createLiveAuthorization({ page, confirmed: autoConfirm, maxCredits: args.max_credits ?? 2 });
 
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
     try {
@@ -366,10 +368,10 @@ export async function handleGenerateImage(args) {
 
     // Delegate to W05 submission adapter: enforces verified bindings,
     // checks UI transaction epoch, runs atomic durable commit (commitPreInvocation),
-    // records invocation boundary, and keeps remote execution safely disabled.
+    // records the invocation boundary before an explicitly authorized click.
     const requestPayload = { prompt, model, ratio, quantity: qty, type: 'image' };
-    const submissionContext = await buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator: promptInput, refs: refPaths, mentionNames });
-    return await executeDurableSubmission({
+    const submissionContext = await buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator: promptInput, refs: refPaths, mentionNames, liveAuthorization });
+    const submitted = await executeDurableSubmission({
       page,
       epoch,
       opStore: createOperationStore(getFlowHome()),
@@ -382,6 +384,8 @@ export async function handleGenerateImage(args) {
       quote,
       ...submissionContext,
     });
+    jobQueue.completeJob(job.id, submitted);
+    return { ...submitted, jobId: job.id };
     }); // end withUiTransaction
   } catch (err) {
     try {

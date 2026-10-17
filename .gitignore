@@ -46,6 +46,12 @@ AUDIT_LOG.untracked.md
 # top-level dispatcher scripts stay committable
 scripts/*/
 
+# Durable live-submission runtime state (operation records, approval
+# consumption markers, durability journal) written under the repo root
+/operations/
+/consumed-children/
+/journal/
+
 # Local agent tooling install (skills/commands resolve from the live env)
 /.opencode/
 

@@ -15,8 +15,8 @@ import { logger } from '../utils/logger.js';
  * 4. Evaluates the common submission policy and executes atomic durable commit (commitPreInvocation)
  *    covering approval consumption, ledger reservation, CAS write, and journal recording.
  * 5. Marks the invocation boundary (submission_unknown).
- * 6. Governs remote execution: disabled by default in Gate A (throws MANUAL_VERIFICATION_REQUIRED)
- *    while permitting callbacks only in explicit internal local-fixture mode.
+ * 6. Governs remote execution: disabled by default; explicit live-browser and
+ *    internal local-fixture callbacks both require the full common policy.
  */
 export async function executeDurableSubmission({
   page,
@@ -43,9 +43,9 @@ export async function executeDurableSubmission({
     throw new FlowError(ErrorCodes.PAGE_CLOSED, 'Browser page is closed; submission refused', {});
   }
 
-  // Gate A: production remains disabled. Only the internal local fixture
-  // mode plus a callback may reach evidence validation or durable writes.
-  if (executionMode !== 'local-fixture' || typeof remoteSubmitFn !== 'function') {
+  // Unconfigured production remains disabled. Explicit live confirmations use
+  // the same evidence, approval, reservation and durable invocation gates.
+  if (!['local-fixture', 'live-browser'].includes(executionMode) || typeof remoteSubmitFn !== 'function') {
     throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
       'Remote submission is disabled in Gate A; no invocation or approval consumption occurred.',
       { status: 'blocked', invocation: 'not-invoked' }
@@ -172,7 +172,7 @@ export async function executeDurableSubmission({
   // Pre-action check before consequential submission click
   assertUiCurrent(epoch);
 
-  logger.info('W05: Executing enabled local fixture callback', { operationId: op.id });
+  logger.info('Executing authorized submission callback', { operationId: op.id, executionMode });
   const result = await remoteSubmitFn({ operationId: op.id, epoch, bounded });
   return {
     status: 'submitted',

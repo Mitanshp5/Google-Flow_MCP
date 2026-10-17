@@ -62,22 +62,33 @@ export async function enumerateAssetTiles(page) {
   try {
     const tiles = await page.evaluate(() => {
       const out = [];
-      for (const el of document.querySelectorAll('[data-asset-id], flow-image-tile [data-media-id], flow-video-tile [data-media-id]')) {
-        const tile = el.closest('flow-image-tile, flow-video-tile, .asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
-        const assetId = el.getAttribute('data-asset-id') || el.getAttribute('data-media-id');
-        if (!assetId) continue;
-        const title = el.getAttribute('data-title') || tile.getAttribute?.('data-title') || tile.querySelector?.('.footer-title')?.textContent?.trim() || (tile.textContent || '').trim().slice(0, 120);
-        const kind = el.getAttribute('data-kind') || tile.getAttribute?.('data-kind') || (tile.tagName === 'FLOW-IMAGE-TILE' ? 'image' : tile.tagName === 'FLOW-VIDEO-TILE' ? 'video' : null);
-        const projectId = el.getAttribute('data-project') || tile.getAttribute?.('data-project') || null;
-        const account = el.getAttribute('data-account') || tile.getAttribute?.('data-account') || null;
-        const createdRaw = el.getAttribute('data-created-at') || tile.getAttribute?.('data-created-at')
-          || el.getAttribute('data-timestamp') || tile.getAttribute?.('data-timestamp');
+      const pushTile = (tile, el) => {
+        // Video tiles expose no data-media-id; the thumbnail's CDN media name
+        // (flow-content.google/{image|video}/{id}) is the stable tile identity.
+        const thumb = tile.querySelector?.('img');
+        const thumbId = String(thumb?.src || '').match(/flow-content\.google\/(?:image|video)\/([a-f0-9-]+)/i)?.[1] || null;
+        const assetId = el?.getAttribute?.('data-asset-id') || el?.getAttribute?.('data-media-id') || thumbId;
+        if (!assetId) return;
+        const title = el?.getAttribute?.('data-title') || tile.getAttribute?.('data-title') || tile.querySelector?.('.footer-title')?.textContent?.trim() || (tile.textContent || '').trim().slice(0, 120);
+        const kind = el?.getAttribute?.('data-kind') || tile.getAttribute?.('data-kind') || (tile.tagName === 'FLOW-IMAGE-TILE' ? 'image' : tile.tagName === 'FLOW-VIDEO-TILE' ? 'video' : null);
+        const projectId = el?.getAttribute?.('data-project') || tile.getAttribute?.('data-project') || null;
+        const account = el?.getAttribute?.('data-account') || tile.getAttribute?.('data-account') || null;
+        const createdRaw = el?.getAttribute?.('data-created-at') || tile.getAttribute?.('data-created-at')
+          || el?.getAttribute?.('data-timestamp') || tile.getAttribute?.('data-timestamp');
         const createdAtMs = createdRaw != null && createdRaw !== '' && Number.isFinite(Number(createdRaw))
           ? Number(createdRaw)
           : undefined;
         const rect = tile.getBoundingClientRect?.();
         const visible = rect ? rect.width > 0 && rect.height > 0 : true;
         out.push({ id: assetId, assetId, title, kind, projectId, account, createdAtMs, visible });
+      };
+      for (const el of document.querySelectorAll('[data-asset-id], flow-image-tile [data-media-id], flow-video-tile [data-media-id]')) {
+        const tile = el.closest('flow-image-tile, flow-video-tile, .asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
+        pushTile(tile, el);
+      }
+      for (const tile of document.querySelectorAll('flow-video-tile, flow-image-tile')) {
+        if (tile.querySelector('[data-media-id], [data-asset-id]')) continue;
+        pushTile(tile, null);
       }
       // De-dupe by asset id, keep first.
       const seen = new Map();
@@ -94,7 +105,7 @@ export async function enumerateAssetTiles(page) {
 
 function tileLocator(page, assetId) {
   const id = String(assetId).replace(/["\\]/g, '\\$&');
-  return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"]`).first();
+  return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"], flow-video-tile:has(img[src*="${id}"]), flow-image-tile:has(img[src*="${id}"])`).first();
 }
 
 // Target the verified tile: hover/select → More options → Download, with the

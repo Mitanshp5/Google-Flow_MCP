@@ -50,6 +50,7 @@ export const schemas = {
     prompt: nonEmpty('prompt'),
     model: z.string().trim().max(100).optional(),
     auto_confirm: z.boolean().optional().default(false),
+    max_credits: z.number().finite().min(0).max(1000).optional().default(2),
     ratio: z.string().trim().max(16).optional(),
     reference_images: z.array(z.string().max(1024)).max(8).optional(),
     ingredients: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
@@ -87,6 +88,7 @@ export const schemas = {
     quantity: z.number().int().min(1).max(4).optional().describe('Variants for compare-pick-refine; test at low res, re-render winner.'),
     auto_confirm: z.boolean().optional().default(false),
     confirm_generate: z.boolean().optional().default(false).describe('LIVE PAID CLICK. When true: verifies model chip, clicks Generate (spends credits), polls for the video. Default false = prepare-only.'),
+    max_credits: z.number().finite().min(0).max(1000).optional().default(2),
     project_url: z.string().trim().max(2000).optional().describe('Direct Flow /project/ URL — wins over name/campaign matching.'),
   }).passthrough(),
 
