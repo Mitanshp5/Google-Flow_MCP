@@ -5,6 +5,7 @@ import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { getOutputDir } from '../utils/file-manager.js';
 import { selectNewestEligible, verifyDownloadedBytes, classifyDownloadError } from '../assets/catalog.js';
 import { saveMediaDownload } from '../utils/media-download.js';
+import fs from 'fs/promises';
 
 // Extension sets from the P0-3 plan (.mp4/.webm → video; .png/.jpg/.webp
 // → image; .jpeg included as the same format as .jpg). Anything else
@@ -97,11 +98,74 @@ function tileLocator(page, assetId) {
   return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"]`).first();
 }
 
+// --- Network fetch path -------------------------------------------------
+// connectOverCDP() attaches the browser WITHOUT Playwright's download
+// handling, so clicking Flow's Download control never emits a 'download'
+// event (Chrome may still save the file in its own UI). Every
+// page.waitForEvent('download') below therefore resolves to null on the
+// remote-debugging path and the tool reports "no download event" although
+// the asset is perfectly available. Flow serves the same bytes from
+// https://flow.google.com/asb/<token>, so fetch them out of the
+// authenticated page and feed the existing save/verify pipeline instead.
+const CT_EXT = {
+  'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg',
+  'image/jpg': 'jpg', 'image/gif': 'gif', 'image/avif': 'avif',
+  'video/mp4': 'mp4', 'video/webm': 'webm',
+};
+const MAX_NETWORK_BYTES = 40 * 1024 * 1024;
+
+function bytesAsDownload(buffer, mime) {
+  const ext = CT_EXT[String(mime || '').split(';')[0].trim().toLowerCase()] || 'bin';
+  return {
+    suggestedFilename: () => `flow-latest.${ext}`,
+    saveAs: async (dest) => { await fs.writeFile(dest, buffer); },
+  };
+}
+
+export async function fetchMediaViaNetwork(page, { assetId = null } = {}) {
+  const hit = await page.evaluate(async (wantedId) => {
+    const imgs = Array.from(document.querySelectorAll('img'))
+      .filter((i) => /\/asb\//.test(i.src || '') && i.naturalWidth >= 200 && i.naturalHeight >= 200);
+    if (!imgs.length) return null;
+    let pick = imgs[0];
+    if (wantedId) {
+      const host = '[data-asset-id], [data-media-id], flow-image-tile, flow-video-tile';
+      const match = imgs.find((i) => {
+        const el = i.closest(host);
+        return el && (el.getAttribute('data-asset-id') === wantedId || el.getAttribute('data-media-id') === wantedId);
+      });
+      if (match) pick = match;
+    }
+    // '=sNNNN-rw' is a Google image size hint. '=s0' requests the ORIGINAL
+    // rendition; merely dropping the hint returns a downscaled 512x286 image.
+    const url = pick.src.includes('=') ? pick.src.replace(/=[^=]*$/, '=s0') : `${pick.src}=s0`;
+    try {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return { ok: false, status: res.status };
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length > 41943040) return { ok: false, tooLarge: bytes.length };
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 8192) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));
+      }
+      return { ok: true, ct: res.headers.get('content-type'), len: bytes.length, b64: btoa(bin), alt: pick.alt || '' };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }, assetId).catch(() => null);
+
+  if (!hit || !hit.ok || !hit.b64) return null;
+  const buffer = Buffer.from(hit.b64, 'base64');
+  logger.info('Media fetched over the network', { assetId, mime: hit.ct, bytes: buffer.length });
+  return { download: bytesAsDownload(buffer, hit.ct), mime: hit.ct, bytes: buffer.length, alt: hit.alt };
+}
+
 // Target the verified tile: hover/select → More options → Download, with the
 // download event pre-registered BEFORE the Download click (same race as the
 // filechooser: awaiting after the click loses the event).
 async function exposeAndDownloadTile(page, asset) {
   const id = asset.assetId || asset.id;
+  // Network path first — it does not depend on Playwright download events.
+  const net = await fetchMediaViaNetwork(page, { assetId: id });
+  if (net) return { download: net.download, error: null, via: 'network' };
   const tile = tileLocator(page, id);
   try {
     await tile.hover({ timeout: 3000 }).catch(() => {});
@@ -151,6 +215,20 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
       // Honest conditional path: the already-open-menu working state (QA
       // single-client retest) with no enumerable tiles. Download the visible
       // context WITHOUT claiming latest identity.
+      // Network path first: connectOverCDP never emits 'download' events, so a
+      // click-only attempt below reports a false negative on the CDP route.
+      const net = await fetchMediaViaNetwork(page);
+      if (net) {
+        const saved = await saveMediaDownload(net.download, outDirFn);
+        return {
+          status: 'downloaded',
+          message: 'Latest media saved (fetched from the authenticated page; no enumerable tile identity).',
+          ...saved,
+          latest_verified: false,
+          asset: null,
+          fetched: 'network',
+        };
+      }
       const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
       if (!(await openDl.isVisible().catch(() => false))) {
         await shotFn(page, 'download-btn-not-found').catch(() => null);
