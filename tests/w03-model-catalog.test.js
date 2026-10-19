@@ -39,9 +39,12 @@ describe('W03 exact live model identities (F05)', () => {
       // Isolate: cache without Lite so fallback provenance is exercised.
       fs.mkdirSync(path.dirname(f), { recursive: true });
       fs.writeFileSync(f, JSON.stringify({ imageModels: [], videoModels: [], source: 'live', observedAt: new Date().toISOString() }));
-      // User config lists stale "Nano Banana 2" in this repo; it must not be
-      // reported available:true (planning candidate only).
-      const cfg = getModelProvenance('Nano Banana 2');
+      // Use an actual configured model; users may have updated stale names.
+      // Configuration still must not be treated as observed availability.
+      const { get } = await import('../src/utils/config.js');
+      const configuredModel = Object.keys(get('imageModels', {}))[0];
+      expect(configuredModel).toBeTruthy();
+      const cfg = getModelProvenance(configuredModel);
       expect(cfg.source).toBe('config');
       expect(cfg.available).toBe(false);
       // Fallback candidates are never live availability either.

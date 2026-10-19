@@ -60,8 +60,13 @@ describe('closeMentionPopup', () => {
 describe('listMentionOptions', () => {
   it('strips type labels and cleans up the @ afterwards', async () => {
     const page = mockPageRoutes(
-      [{ match: 'Search', visible: true }],
-      { evaluateResult: ['Cow in spaceImage', 'BobCharacter'] }
+      [{ match: 'Search', element: {
+        isVisible: async () => true,
+        locator: () => ({ all: async () => ['Cow in spaceImage', 'BobCharacter'].map(title => ({
+          isVisible: async () => true,
+          evaluate: async () => ({ title, pending: false }),
+        })) }),
+      } }]
     );
     const input = textInput('draft');
     const names = await listMentionOptions(page, input);

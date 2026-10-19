@@ -84,6 +84,9 @@ export function resolveSafePath(inputPath) {
   if (inputPath.includes('\0')) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'File path contains null bytes');
   }
+  if (/[\x01-\x1f\x7f]/.test(inputPath)) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'File path contains control characters, possibly from unescaped Windows backslashes. Copy the forward-slash path returned by the tool (C:/folder/image.jpg); do not guess or repair the filename.');
+  }
   const trimmed = inputPath.trim();
   if (path.isAbsolute(trimmed)) return path.normalize(trimmed);
   return path.resolve(getFlowHome(), trimmed);

@@ -4,7 +4,8 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { getOutputDir } from '../utils/file-manager.js';
 import { selectNewestEligible, verifyDownloadedBytes, classifyDownloadError } from '../assets/catalog.js';
-import { saveMediaDownload } from '../utils/media-download.js';
+import { saveMediaDownload, captureMediaDownload } from '../utils/media-download.js';
+import { createHash } from 'node:crypto';
 
 // Extension sets from the P0-3 plan (.mp4/.webm → video; .png/.jpg/.webp
 // → image; .jpeg included as the same format as .jpg). Anything else
@@ -65,10 +66,14 @@ export async function enumerateAssetTiles(page) {
       const pushTile = (tile, el) => {
         // Video tiles expose no data-media-id; the thumbnail's CDN media name
         // (flow-content.google/{image|video}/{id}) is the stable tile identity.
-        const thumb = tile.querySelector?.('img');
+        const thumb = tile.querySelector?.('img') || tile.querySelector?.('video');
         const thumbId = String(thumb?.src || '').match(/flow-content\.google\/(?:image|video)\/([a-f0-9-]+)/i)?.[1] || null;
         const assetId = el?.getAttribute?.('data-asset-id') || el?.getAttribute?.('data-media-id') || thumbId;
-        if (!assetId) return;
+        const thumbnailUrl = String(thumb?.src || thumb?.poster || '');
+        // After reload, Flow may expose only an opaque authenticated thumbnail
+        // URL. Retain that exact DOM identity; never infer a remote media UUID.
+        const redirectedThumbnail = /^https:\/\/flow\.google\.com\/asb\//.test(thumbnailUrl);
+        if (!assetId && !redirectedThumbnail) return;
         const title = el?.getAttribute?.('data-title') || tile.getAttribute?.('data-title') || tile.querySelector?.('.footer-title')?.textContent?.trim() || (tile.textContent || '').trim().slice(0, 120);
         const kind = el?.getAttribute?.('data-kind') || tile.getAttribute?.('data-kind') || (tile.tagName === 'FLOW-IMAGE-TILE' ? 'image' : tile.tagName === 'FLOW-VIDEO-TILE' ? 'video' : null);
         const projectId = el?.getAttribute?.('data-project') || tile.getAttribute?.('data-project') || null;
@@ -80,7 +85,8 @@ export async function enumerateAssetTiles(page) {
           : undefined;
         const rect = tile.getBoundingClientRect?.();
         const visible = rect ? rect.width > 0 && rect.height > 0 : true;
-        out.push({ id: assetId, assetId, title, kind, projectId, account, createdAtMs, visible });
+        out.push({ id: assetId, assetId, title, kind, projectId, account, createdAtMs, visible,
+          ...(!assetId ? { thumbnailUrl } : {}) });
       };
       for (const el of document.querySelectorAll('[data-asset-id], flow-image-tile [data-media-id], flow-video-tile [data-media-id]')) {
         const tile = el.closest('flow-image-tile, flow-video-tile, .asset-tile, [data-asset-tile], li, [role="listitem"]') || el;
@@ -93,19 +99,28 @@ export async function enumerateAssetTiles(page) {
       // De-dupe by asset id, keep first.
       const seen = new Map();
       for (const t of out) {
-        if (!seen.has(t.assetId)) seen.set(t.assetId, t);
+        const key = t.assetId || t.thumbnailUrl;
+        if (!seen.has(key)) seen.set(key, t);
       }
       return [...seen.values()].filter((t) => t.visible !== false);
     }).catch(() => []);
-    return Array.isArray(tiles) ? tiles : [];
+    if (!Array.isArray(tiles)) return [];
+    for (const tile of tiles) {
+      if (tile.assetId || !tile.thumbnailUrl) continue;
+      tile.id = tile.assetId = `thumbnail:${createHash('sha256').update(tile.thumbnailUrl).digest('hex')}`;
+      tile.identityKind = 'thumbnail-url';
+    }
+    return tiles.filter(tile => tile.assetId);
   } catch {
     return [];
   }
 }
 
-function tileLocator(page, assetId) {
+function tileLocator(page, assetId, thumbnailUrl = null) {
   const id = String(assetId).replace(/["\\]/g, '\\$&');
-  return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"], flow-video-tile:has(img[src*="${id}"]), flow-image-tile:has(img[src*="${id}"])`).first();
+  const source = thumbnailUrl?.replace(/["\\]/g, '\\$&');
+  const thumbnail = source ? `, flow-video-tile:has(img[src="${source}"]), flow-image-tile:has(img[src="${source}"]), flow-video-tile:has(video[src="${source}"]), flow-video-tile:has(video[poster="${source}"])` : '';
+  return page.locator(`flow-image-tile:has([data-media-id="${id}"]), flow-video-tile:has([data-media-id="${id}"]), [data-asset-id="${id}"], flow-video-tile:has(img[src*="${id}"]), flow-image-tile:has(img[src*="${id}"])${thumbnail}`).first();
 }
 
 // Target the verified tile: hover/select → More options → Download, with the
@@ -113,7 +128,7 @@ function tileLocator(page, assetId) {
 // filechooser: awaiting after the click loses the event).
 async function exposeAndDownloadTile(page, asset) {
   const id = asset.assetId || asset.id;
-  const tile = tileLocator(page, id);
+  const tile = tileLocator(page, id, asset.thumbnailUrl);
   try {
     await tile.hover({ timeout: 3000 }).catch(() => {});
   } catch { /* hover best-effort */ }
@@ -152,6 +167,7 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
   const shotFn = deps.takeScreenshotFn || takeScreenshot;
   const outDirFn = deps.getOutputDirFn || getOutputDir;
   logger.info('Attempting to download latest result');
+  let transfer = null;
 
   try {
     // 1. Enumerate live DOM identities FIRST — mapping before any click.
@@ -168,13 +184,14 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
         return { status: 'not_found', message: 'No download button found on current page' };
       }
       const dp = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+      transfer = await captureMediaDownload(page, outDirFn);
       await openDl.click().catch(() => {});
       const download = await dp;
       if (!download) {
         await shotFn(page, 'download-no-event').catch(() => null);
         return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: 'No file was downloaded. The render may still be running or the download control may open a menu. Verify the asset before retrying.' };
       }
-      const saved = await saveMediaDownload(download, outDirFn);
+      const saved = await saveMediaDownload(transfer ? transfer.wrap(download) : download, outDirFn, { page });
       return { status: 'downloaded', message: 'Verified media saved with format extensions (current selection; latest identity not verified).', ...saved, latest_verified: false, asset: null };
     }
 
@@ -200,6 +217,7 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
           status: mapped.status === 'ambiguous' ? 'ambiguous' : 'not_found',
           reason: mapped.reason || 'no eligible asset mapping',
           choices: (mapped.choices || []).map((c) => c.assetId || c.id),
+          assets: tiles.map(({ assetId, title, kind, identityKind }) => ({ assetId, title, kind, identityKind: identityKind || 'media-id' })),
           message: 'Download blocked: no unambiguous latest asset identity.',
         };
       }
@@ -207,17 +225,20 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
     }
 
     // 3. Mapping validated BEFORE the click — now target its real menu.
+    transfer = await captureMediaDownload(page, outDirFn);
     const { download, error } = await exposeAndDownloadTile(page, chosen);
     if (!download) {
       await shotFn(page, 'download-no-event').catch(() => null);
       return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: error || 'Download menu did not produce a download event. No file saved.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
     }
-    const saved = await saveMediaDownload(download, outDirFn);
-    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true, latest_verified: !explicitId, asset: { assetId: chosen.assetId || chosen.id, title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
+    const saved = await saveMediaDownload(transfer ? transfer.wrap(download) : download, outDirFn, { page });
+    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true, latest_verified: !explicitId, asset: { assetId: chosen.assetId || chosen.id, identityKind: chosen.identityKind || 'media-id', title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
     // Signed-URL expiry / incomplete / failure — no fabricated identity.
     const classified = classifyDownloadError(err);
     throw new FlowError(ErrorCodes.DOWNLOAD_FAILED, `Download failed (${classified.code}): ${classified.message}`, { code: classified.code, retryable: classified.retryable });
+  } finally {
+    await transfer?.close();
   }
 }
 

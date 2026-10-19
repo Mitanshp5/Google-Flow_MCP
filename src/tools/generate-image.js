@@ -73,7 +73,7 @@ export async function handleGenerateImage(args) {
       campaign: args.campaign,
       project_url: args.project_url,
     });
-    const liveAuthorization = createLiveAuthorization({ page, confirmed: autoConfirm, maxCredits: args.max_credits ?? 2 });
+    const liveAuthorization = await createLiveAuthorization({ page, confirmed: autoConfirm, maxCredits: args.max_credits });
 
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
     try {
@@ -179,9 +179,7 @@ export async function handleGenerateImage(args) {
 
     // STEP 6: Fill the prompt + READ BACK to verify it landed.
     await promptInput.click();
-    await promptInput.fill('');
-    await page.waitForTimeout(200);
-    await promptInput.type(prompt, { delay: 15 });
+    await promptInput.fill(prompt);
     logger.info('Prompt filled', { promptLength: prompt.length });
     await page.waitForTimeout(500);
     const filledText = await promptInput.textContent().catch(() => '')
@@ -225,9 +223,11 @@ export async function handleGenerateImage(args) {
     const refAttach = await attachReferenceFiles(page, promptInput, refPaths, { label: 'reference_images' });
     const references = {
       requested: refAttach.requested,
-      attached: refAttach.inputAccepted,
+      attached: refAttach.attached,
+      input_accepted: refAttach.inputAccepted,
       verified: refAttach.verified,
       notes: refAttach.notes,
+      ...(refAttach.reason ? { reason: refAttach.reason } : {}),
     };
     if (refPaths.length > 0 && !refAttach.verified) {
       const msg = `Reference images requested but not all landed in the composer (input accepted ${refAttach.inputAccepted}/${refPaths.length}). No credits spent.`;
@@ -302,7 +302,7 @@ export async function handleGenerateImage(args) {
           ...references,
           verified: referencesVerified,
         },
-        account: get('expectedAccount'),
+        account: extractObservedAccount(await page.content()),
         screenshot: setupScreenshot,
         jobId: job.id,
       };

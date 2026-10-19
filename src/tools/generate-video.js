@@ -314,9 +314,7 @@ export async function handleGenerateVideo(args) {
 
     // Fill prompt (scaffolded) + READ BACK to verify it actually landed.
     await promptInput.click();
-    await promptInput.fill('');
-    await page.waitForTimeout(200);
-    await promptInput.type(prompt, { delay: 20 });
+    await promptInput.fill(prompt);
     await page.waitForTimeout(500);
     const filledText = await promptInput.textContent().catch(() => '')
       || await promptInput.inputValue().catch(() => '');
@@ -503,7 +501,7 @@ export async function handleGenerateVideo(args) {
         inputLocator: promptInput,
         refs: frameFiles,
         mentionNames,
-        liveAuthorization: createLiveAuthorization({ page, confirmed: args.confirm_generate === true, maxCredits: args.max_credits ?? 2 }),
+        liveAuthorization: await createLiveAuthorization({ page, confirmed: args.confirm_generate === true, maxCredits: args.max_credits }),
       });
 
       const submitted = await executeDurableSubmission({
@@ -566,7 +564,7 @@ export async function handleGenerateVideo(args) {
       status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
       jobId: job.id,
-      account: get('expectedAccount'),
+      account: extractObservedAccount(await page.content()),
       model_used: model,
       ratio,
       duration: effectiveDuration,

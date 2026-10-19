@@ -30,6 +30,19 @@ afterEach(() => {
 });
 
 describe('project registry persistence', () => {
+  it('explicit campaign beats the previously remembered session project', async () => {
+    const oldUrl = 'https://flow.google.com/project/old-session';
+    const targetUrl = 'https://flow.google.com/project/requested';
+    saveProjects({projects:[
+      {id:'old',url:oldUrl,name:'Old',campaign:'old'},
+      {id:'new',url:targetUrl,name:'Requested',campaign:'requested'},
+    ]});
+    await ensureProjectInContext({url:()=>oldUrl}, {project_url:oldUrl});
+    // Already on requested project: no navigation or rename should occur.
+    const result = await ensureProjectInContext({url:()=>targetUrl}, {name:'Requested',campaign:'requested'});
+    expect(result.url).toBe(targetUrl);
+    expect(result.name).toBe('Requested');
+  });
   it('preserves registered project titles when a campaign is passed on reuse', async () => {
     const url = 'https://flow.google.com/project/existing-title';
     saveProjects({ projects: [{ id: 'registered', url, name: 'The Last Light', campaign: 'campaign-id', tasks: [] }] });

@@ -7,6 +7,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { logger, closeLogger } from './utils/logger.js';
+import { normalizeToolResult } from './utils/tool-result.js';
 import { launchKiaraProfile, navigateToFlow } from './browser/launch-profile.js';
 import { getPage, setBrowser, closeBrowser as closeBrowserConnection } from './browser/connect.js';
 import { verifyAccount as checkAccount } from './browser/account-check.js';
@@ -17,6 +18,7 @@ import { handleListBrowserTargets } from './tools/list-browser-targets.js';
 import { handleListProjects } from './tools/list-projects.js';
 import { handleGenerateConfirm } from './tools/generate-confirm.js';
 import { handleRenameCharacter } from './tools/rename-character.js';
+import { handleRenameImage } from './tools/rename-image.js';
 import { handleGenerateImage } from './tools/generate-image.js';
 import { handleGenerateVideo } from './tools/generate-video.js';
 import { handleDownloadLatest } from './tools/download-latest.js';
@@ -90,7 +92,7 @@ const TOOL_DEFINITIONS = [
         type: 'object',
         properties: {
           job_id: { type: 'string', description: 'Prepared ready_for_confirmation job id.' },
-          max_credits: { type: 'number', description: 'Spend ceiling (images ~0, Omni 1.1 Flash cheap default, Veo ~20). Refuses above this.', default: 2 },
+          max_credits: { type: 'number', description: 'Optional per-submission ceiling. A persistent 50-credit total project budget applies by default.' },
           wait_ms: { type: 'number', description: 'Post-click watch, default 2s, ceiling 30s. Characters return immediately for renaming. Verify remote output before downloading.', default: 2000 },
         },
         required: ['job_id'],
@@ -111,6 +113,16 @@ const TOOL_DEFINITIONS = [
         required: ['new_name'],
       },
     },
+  {
+    name: 'flow_rename_image',
+    description: 'Rename one existing project image by exact name or asset_id. No generation, credits, or project renaming.',
+    inputSchema: { type: 'object', properties: {
+      name: { type: 'string', description: 'Exact current image title.' },
+      asset_id: { type: 'string', description: 'Stable media UUID (wins over name).' },
+      new_name: { type: 'string', description: 'New image title.' },
+      project_name: { type: 'string' }, campaign: { type: 'string' }, project_url: { type: 'string' },
+    }, required: ['new_name'] },
+  },
   {
     name: 'flow_disconnect',
     description: 'Close the browser and clean up the MCP connection to Google Flow.',
@@ -164,7 +176,7 @@ const TOOL_DEFINITIONS = [
         prompt: { type: 'string', description: 'The text prompt for image generation.' },
         model: { type: 'string', description: 'Model to use: Nano Banana Pro, Nano Banana 2, or Imagen 4.', default: 'Nano Banana 2' },
         auto_confirm: { type: 'boolean', description: '⚠️ CREDITS. If false (default): only prepares, consumes nothing. If true: verifies that Image mode is active, THEN clicks Generate (consumes credits).', default: false },
-        max_credits: { type: 'number', description: 'Maximum credits authorized for this submission. Unknown or higher quotes are refused.', default: 2 },
+        max_credits: { type: 'number', description: 'Optional per-submission ceiling. Project budget defaults to 50 credits total; unknown quotes are refused.' },
         ratio: { type: 'string', description: 'Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4.', default: '1:1' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to local reference images to upload (optional).' },
         ingredients: { type: 'array', items: { type: 'string' }, description: 'Names of existing project images/characters to reference via "@name" (e.g., ["Bob the Astronaut", "Image 3"]). Use flow_list_mention_options to discover available names.' },
@@ -197,7 +209,7 @@ const TOOL_DEFINITIONS = [
         quantity: { type: 'number', description: 'Variants 1-4 for compare-pick-refine.', default: 1 },
         auto_confirm: { type: 'boolean', description: 'Always prepare-only today. Reserved.', default: false },
         confirm_generate: { type: 'boolean', description: 'Authorize one verified paid submission. Rendering remains pending.', default: false },
-        max_credits: { type: 'number', description: 'Credit ceiling. Unknown/higher quotes refuse.', default: 2 },
+        max_credits: { type: 'number', description: 'Optional per-submission ceiling. Project budget defaults to 50 credits total.' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to local reference images to upload (optional).' },
         ingredients: { type: 'array', items: { type: 'string' }, description: 'Project @names from flow_list_mention_options.' },
         use_character: { type: 'string', description: 'Additional character @name.' },
@@ -224,7 +236,7 @@ const TOOL_DEFINITIONS = [
     name: 'flow_download_latest',
     description: 'Download a verified latest asset, or an explicit asset_id. Ambiguous ordering returns choices instead of guessing. Saves and verifies media bytes. No generation or upscaling.',
     inputSchema: { type: 'object', properties: {
-      asset_id: { type: 'string', description: 'Optional exact asset ID from download choices; selects that asset without claiming it is newest.' },
+        asset_id: { type: 'string', description: 'Exact ID from current download choices. May be a thumbnail: token bound to the visible library, not a remote media UUID. Refresh choices after reloading Flow; explicit selection never claims newest.' },
     } },
   },
   {
@@ -250,6 +262,7 @@ const TOOL_DEFINITIONS = [
         project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
         campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
         auto_confirm: { type: 'boolean', description: 'If false (default): only fills the description and returns "ready_for_confirmation" without submitting. If true: submits (may use credits).', default: false },
+        max_credits: { type: 'number', description: 'Optional per-submission ceiling. Project budget defaults to 50 credits total; configured character pricing still applies.' },
       },
       required: ['name', 'description'],
     },
@@ -489,6 +502,10 @@ const TOOL_DEFINITIONS = [
 
 const pendingGeneration = new Set();
 async function handleToolCall(name, args) {
+  return normalizeToolResult(await handleNativeToolCall(name, args));
+}
+
+async function handleNativeToolCall(name, args) {
   // All mutating dispatches share one UI owner; nested handler transactions
   // join it. Reset stays outside so it can fence an active owner immediately.
   const ownTransaction = new Set([
@@ -498,7 +515,7 @@ async function handleToolCall(name, args) {
     'flow_use_grid_architect', 'flow_use_tool',
     'flow_open', 'flow_generate_image', 'flow_generate_video',
     'flow_create_character', 'flow_create_scene',
-    'flow_create_project', 'flow_generate_confirm', 'flow_rename_character',
+    'flow_create_project', 'flow_generate_confirm', 'flow_rename_character', 'flow_rename_image',
   ]);
   const generation = ['flow_generate_image', 'flow_generate_video', 'flow_create_character', 'flow_create_scene', 'flow_use_grid_architect'].includes(name);
   if (generation && pendingGeneration.size) {
@@ -621,6 +638,11 @@ async function dispatchToolCall(name, args, epoch) {
     case 'flow_generate_confirm': {
       const v = parseOrThrow(schemas.flow_generate_confirm, args, 'flow_generate_confirm');
       const result = await handleGenerateConfirm(v);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }
+
+    case 'flow_rename_image': {
+      const result = await handleRenameImage(parseOrThrow(schemas.flow_rename_image, args, 'flow_rename_image'));
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 

@@ -207,8 +207,8 @@ export function resolveModel(requested, kind = 'video') {
   if (scored.length === 0) return null;
   scored.sort((a, b) => a.extra - b.extra);
   const best = scored.filter(s => s.extra === scored[0].extra);
-  if (best.length > 1) {
-    logger.debug('Ambiguous model request', { requested, candidates: best.map(s => s.candidate) });
+  if (scored.length > 1) {
+    logger.debug('Ambiguous model request', { requested, candidates: scored.map(s => s.candidate) });
     return null;
   }
   return { name: best[0].candidate, caps: capsFor(best[0].candidate), from: 'tokens' };

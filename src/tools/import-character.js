@@ -2,13 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { getPage } from '../browser/connect.js';
-import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements } from '../browser/safe-actions.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { getFlowHome, get } from '../utils/config.js';
+import { getFlowHome } from '../utils/config.js';
 import { resolveSafePath, assertInsideBase } from '../utils/sanitize.js';
-import { ensureProjectInContext, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
-import { isErrorHtml } from '../browser/app-state.js';
+import { handleCreateCharacter } from './create-character.js';
+import { schemas, parseOrThrow } from '../utils/validate.js';
 
 /**
  * Import a character from a saved JSON file (args.file_path).
@@ -21,8 +19,7 @@ import { isErrorHtml } from '../browser/app-state.js';
  * Image paths in the JSON may be absolute, or relative to the JSON file's directory.
  */
 export async function handleImportCharacter(args) {
-  const page = getPage();
-
+  getPage(); // Preserve the browser-required tool contract before file I/O.
   if (!args.file_path || typeof args.file_path !== 'string') {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'file_path is required and must be a string.');
   }
@@ -75,84 +72,10 @@ export async function handleImportCharacter(args) {
 
   logger.info('Importing character from file', { name: characterName, file: absFile });
 
-  // F02: The Character page exists scoped to a project
-  // ({flowBase}/project/{id}/character) — singular route.
-  const project = await ensureProjectInContext(page, {
-    name: args.project_name,
-    campaign: args.campaign,
-    project_url: args.project_url,
-  });
-  const projectId = extractProjectId(project.url);
-  const charUrl = projectId
-    ? `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`
-    : `${project.url.replace(/\/$/, '')}/character`;
-
-  await page.goto(charUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(2000);
-
-  const currentUrl = page.url();
-  const title = await page.title().catch(() => '');
-  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '').catch(() => '');
-
-  // F02: Check if route redirected to 404 or error page
-  if (isErrorHtml({ title, bodyText, url: currentUrl })) {
-    return {
-      status: 'blocked',
-      reason: 'page_not_found',
-      url: currentUrl,
-      title,
-      message: 'Character route returned 404 or page not found.',
-      screenshot: await takeScreenshot(page, 'characters-import-404'),
-    };
-  }
-
-  const fileInput = await page.$('input[type="file"]');
-  const characterForm = await page.locator('[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]').first().isVisible().catch(() => false);
-  if (!characterForm) {
-    return { status: 'blocked', reason: 'character_form_not_found',
-      message: 'Character import form identity is unverified; no fields were changed.',
-      screenshot: await takeScreenshot(page, 'character-import-unverified') };
-  }
-  if (!fileInput) {
-    const elements = await detectPageElements();
-    return {
-      status: 'discovery_needed',
-      message: 'Character page opened. File input for import not auto-detected.',
-      elements,
-      screenshot: await takeScreenshot(page, 'characters-import'),
-    };
-  }
-
-  const unapplied = [];
-  const actual = {};
-  for (const [key, value, selector] of [
-    ['name', characterName, 'input[placeholder*="Name" i], input[aria-label*="Name" i]'],
-    ['description', description, '[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]'],
-  ]) {
-    const input = page.locator(selector).first();
-    if (typeof value !== 'string' || !value.trim() || !await input.isVisible().catch(() => false)) {
-      unapplied.push(key);
-      continue;
-    }
-    await input.fill(value);
-    actual[key] = await input.inputValue().catch(() => null)
-      ?? await input.textContent().catch(() => null);
-    if (actual[key] !== value) unapplied.push(key);
-  }
-  // A generic file input proves neither native character ownership nor the
-  // persisted reference identity. Until that native acknowledgement is observed,
-  // required reference packs remain explicitly unverified rather than skipped.
-  if (referenceImages.length > 0) unapplied.push('reference_images');
-  return {
-    status: unapplied.length ? 'prepared_unverified' : 'ready_for_confirmation',
-    message: unapplied.length ? 'Character import has unverified required fields or references. No submission occurred.'
-      : 'Character fields read back. Manual confirmation is required; no submission occurred.',
-    name: characterName,
-    description,
-    reference_images: referenceImages,
-    actual,
-    unapplied,
-    screenshot: await takeScreenshot(page, 'character-import-ready'),
-  };
+  // Import is a shared, verified preparation. A file input exists only after
+  // opening Flow's upload picker, and the name is applied after creation.
+  const preparation = parseOrThrow(schemas.flow_create_character, {
+    ...args, name: characterName, description, reference_images: referenceImages, auto_confirm: false,
+  }, 'flow_import_character');
+  return { ...await handleCreateCharacter(preparation), imported_from: absFile };
 }

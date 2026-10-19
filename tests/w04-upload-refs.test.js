@@ -9,6 +9,7 @@ import {
   openUploadPicker,
   uploadReferences,
   verifySlotAssignment,
+  attachUploadedPickerAssets,
 } from '../src/browser/upload.js';
 
 const UPLOAD_FIXTURE = `
@@ -85,6 +86,36 @@ describe('W04 behavioral upload filechooser race', () => {
 });
 
 describe('W04 behavioral uploadReferences end to end', () => {
+  it('selects the new stable ID when frame upload retries have identical filenames', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route('https://flow-content.google/**', route => route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1sAAAAASUVORK5CYII=', 'base64') }));
+      await page.setContent(`
+        <flow-base-prompt-box style="display:block;width:600px">
+          <flow-ingredient-bar><div class="ingredient-bar-container">
+            <div class="frame-trigger"><button>Start</button></div>
+            <button aria-label="Swap first and last frames">Swap</button>
+            <div class="frame-trigger"><button>End</button></div>
+          </div></flow-ingredient-bar>
+        </flow-base-prompt-box>
+        <flow-add-menu-asset-item id="old" style="display:block"><img width="20" height="20" src="https://flow-content.google/image/aaaa-1111"><span class="asset-title">hero.jpg</span></flow-add-menu-asset-item>
+        <flow-add-menu-asset-item id="new" style="display:block"><img width="20" height="20" src="https://flow-content.google/image/bbbb-2222"><span class="asset-title">hero.jpg</span></flow-add-menu-asset-item>
+        <script>
+          document.querySelectorAll('flow-add-menu-asset-item').forEach(item => item.onclick = () => {
+            window.selectedItem = item.id;
+            document.querySelector('.frame-trigger').innerHTML = '<flow-image-ingredient-chip>' + item.querySelector('img').outerHTML + '</flow-image-ingredient-chip>';
+          });
+        </script>
+      `);
+      const result = await attachUploadedPickerAssets(page, ['hero.jpg'], { excludeAssetIds: ['aaaa-1111'], slot: 'start', timeoutMs: 1000 });
+      expect(result.verified).toBe(true);
+      expect(result.acknowledged[0]).toMatchObject({ assetId: 'bbbb-2222', slot: 'start' });
+      expect(await page.evaluate(() => window.selectedItem)).toBe('new');
+    } finally {
+      await page.close();
+    }
+  }, 15000);
+
   it('validates+hashes local files, setFiles via chooser, acks stable identity', async () => {
     const page = await browser.newPage();
     try {

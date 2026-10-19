@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { getFlowHome, get } from '../utils/config.js';
 import { assertFlowUrl } from '../utils/sanitize.js';
-import { ensureProjectInContext, extractProjectId, buildProjectUrl, navigateToSidebar } from '../navigation/project-navigator.js';
+import { ensureProjectInContext, ensureProjectLibrary, extractProjectId, buildProjectUrl, navigateToSidebar } from '../navigation/project-navigator.js';
 
 function selectorsPath() {
   return path.join(getFlowHome(), 'config', 'selectors.map.json');
@@ -43,20 +43,21 @@ function saveSelectors(map) {
 // "character" is NOT a standalone page — it only exists scoped to a project:
 // {flowBase}/project/{projectId}/character (singular per F02)
 // Resolved at runtime in handleDiscoverUi via ensureProjectInContext.
-const PROJECT_SUBROUTE_PAGES = ['characters', 'character'];
+const PROJECT_SUBROUTE_PAGES = [];
 
 // "scenes" (and "images"/"all-media") are NOT separate routes — they are
 // sidebar tabs within the project's main page (same URL, no suffix).
 // Resolved by navigating to the project then clicking the matching tab.
 const PROJECT_TAB_PAGES = {
+  character: 'Characters',
+  characters: 'Characters',
   scenes: 'Scenes',
   scene: 'Scenes',
   images: 'Images',
   image: 'Images',
   'image-generation': 'Images',
   'video-generation': 'All Media',
-  'all-media': 'All Media',
-  allmedia: 'All Media',
+  allMedia: 'All Media',
   imageGeneration: 'Images',
   videoGeneration: 'All Media',
   toolsGallery: 'Tools',
@@ -85,6 +86,11 @@ const PAGE_SELECTOR_KEYS = {
   'image-generation': 'imageGeneration',
   'video-generation': 'videoGeneration',
   'all-media': 'allMedia',
+  allmedia: 'allMedia',
+  imagegeneration: 'imageGeneration',
+  videogeneration: 'videoGeneration',
+  toolsgallery: 'toolsGallery',
+  gridarchitect: 'gridArchitect',
   'tools-gallery': 'toolsGallery',
   'tools gallery': 'toolsGallery',
   tools: 'toolsGallery',
@@ -148,6 +154,7 @@ export async function handleDiscoverUi(args) {
     // For sidebar-tab pages (Scenes/Images/All Media), click the tab —
     // these don't have their own URL, just a client-side state change.
     if (tabToClick) {
+      await ensureProjectLibrary(page);
       const nav = await navigateToSidebar(page, tabToClick);
       if (!nav) {
         return { status: 'blocked', reason: 'requested_view_unverified', page: pageName,

@@ -5,7 +5,7 @@ import { detectPageElements, ensureManualMode } from '../browser/safe-actions.js
 import { saveMetadata } from '../utils/file-manager.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { jobQueue } from '../queue/job-queue.js';
-import { ensureProjectInContext, navigateToSidebar, extractProjectId } from '../navigation/project-navigator.js';
+import { ensureProjectInContext, ensureProjectLibrary, navigateToSidebar, extractProjectId } from '../navigation/project-navigator.js';
 import { insertMentionReferences } from '../navigation/mentions.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { getFlowHome } from '../utils/config.js';
@@ -64,9 +64,14 @@ export async function handleCreateScene(args) {
       throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
     }
 
+    await ensureProjectLibrary(page);
     const nav = await navigateToSidebar(page, 'Scenes');
-    if (!nav.ok) {
-      logger.warn('Sidebar navigation to Scenes section unverified', { blocker: nav.blocker });
+    if (!nav) {
+      if (autoConfirm) throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, 'Scenes library could not be verified. No scene setup performed.');
+      const blocked = {status:'blocked',reason:'scene_form_not_found',navigation_verified:false,jobId:job.id,
+        message:'Scenes library could not be verified. No scene setup performed.'};
+      jobQueue.failJob(job.id,new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,blocked.message));
+      return blocked;
     }
     await page.waitForTimeout(2000);
     await takeScreenshot(page, 'scenes-section');

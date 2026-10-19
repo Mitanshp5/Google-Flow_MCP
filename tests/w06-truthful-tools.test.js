@@ -152,13 +152,13 @@ describe('W06 Truthful Diagnostics — flow_discover_ui', () => {
 describe('W06 Truthful Feature Handlers — Characters and 404 Handling', () => {
   it('flow_open_characters returns blocked on 404 page', async () => {
     const page = await makePage({
-      '/character': '<html><head><title>404 Not Found</title></head><body><h1>Error: 404</h1></body></html>',
-      default: VALID_PROJECT_SHELL,
+      '/broken-character-library': '<html><head><title>404 Not Found</title></head><body><h1>Error: 404</h1></body></html>',
+      default: VALID_PROJECT_SHELL.replace('</nav>', '<button onclick="location.href=\'/broken-character-library\'">Characters</button></nav>'),
     }, PROJECT_URL);
     try {
       const res = await withPage(page, async () => handleOpenCharacters({ project_url: PROJECT_URL }));
       expect(res.status).toBe('blocked');
-      expect(res.reason).toBe('page_not_found');
+      expect(res.reason, JSON.stringify({result:res,url:page.url(),title:await page.title(),body:await page.textContent('body')})).toBe('page_not_found');
     } finally {
       await page.close();
     }
@@ -340,8 +340,10 @@ describe('W06 Truthful Generation Handlers — Video and Image', () => {
       </html>
     `, PROJECT_URL);
     try {
+      // >1500 chars used to exceed locator.type's 30s timeout at 20ms/char.
+      const longPrompt = 'A hero walking in the rain. '.repeat(75).trim();
       const res = await withPage(page, async () => handleGenerateVideo({
-        prompt: 'A hero walking in the rain',
+        prompt: longPrompt,
         shots: [
           { prompt: 'Close up of boots stepping into puddle', duration: '4s' },
           { prompt: 'Wide shot of hero walking away', duration: '6s' },
@@ -356,6 +358,7 @@ describe('W06 Truthful Generation Handlers — Video and Image', () => {
       expect(res.shots_plan_only).toBe(true);
       expect(res.shots_notice).toMatch(/plan-only metadata/i);
       expect(res.settings_verification).toBeDefined();
+      expect(await page.locator('[contenteditable="true"]').textContent()).toContain(longPrompt);
     } finally {
       await page.close();
     }

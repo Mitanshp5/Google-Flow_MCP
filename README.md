@@ -100,7 +100,7 @@ Open `config/flow.config.json` and set at minimum:
 
 ```json
 {
-  "expectedAccount": "your-email@gmail.com",
+  "expectedAccount": null,
   "chromeProfile": "Default"
 }
 ```
@@ -185,6 +185,7 @@ npm run build       # bundles src/ -> dist/ (required before register)
      references)
    - `flow_generate_confirm` — live-click Generate for a verified `ready_for_confirmation` preparation, gated by `max_credits` (images ~0, Omni cheap, Veo ~20; never confirms `prepared_unverified`)
    - `flow_rename_character` — rename a character in its detail page (never the project title)
+   - `flow_rename_image` — rename one image by exact title or media ID (never the project title)
    - `flow_list_mention_options` — see what images/characters are available
      to reference by name
    - `flow_create_scene` — create a new scene, optionally referencing characters
@@ -206,12 +207,13 @@ everything ends up in one place instead of a new project per request.
 | `flow_list_projects` | List known projects from the local registry (no browser needed) |
 | `flow_open` | Navigate the connected browser to a Flow URL without reconnecting |
 | `flow_status` | Report current connection/page status |
-| `flow_account_check` | Verify the signed-in Google account matches `expectedAccount` |
+| `flow_account_check` | Identify the signed-in Google account; enforce `expectedAccount` only if configured |
 | `flow_discover_ui` | Navigate to a Flow page and dump interactive elements (debugging) |
 | `flow_generate_image` | Generate image(s) from a prompt in the current project (prepare-only by default; `auto_confirm:true` spends credits) |
 | `flow_generate_video` | Generate video(s), optionally with `ingredients`/`use_character`/`use_scene` references (prepare-only by default; `confirm_generate:true` spends credits) |
 | `flow_generate_confirm` | Live-click Generate for a verified `ready_for_confirmation` job, gated by `max_credits` (never confirms `prepared_unverified`) |
 | `flow_rename_character` | Rename a character in its detail page (never the project title) |
+| `flow_rename_image` | Rename an existing image by exact `name` or `asset_id`, with `new_name` and optional project scope |
 | `flow_list_models` | List video/image models, ratios, durations from Flow UI (live) or cache |
 | `flow_download_latest` | Download the most recently generated asset |
 | `flow_create_character` | Create a new character (name + description + optional `archetype` starter + reference images) |
@@ -234,7 +236,7 @@ All settings live in `config/flow.config.json` (copy from `flow.config.example.j
 
 | Field | Description | Default |
 |---|---|---|
-| `expectedAccount` | Google account email `flow_account_check` expects | *(required)* |
+| `expectedAccount` | Optional email restriction; `null` accepts any positively identified signed-in account | `null` |
 | `chromeExecutable` | Full path to `chrome` executable (optional, auto-detected) | auto-detected |
 | `chromeUserDataDir` | Path to Chrome's "User Data" folder | auto-detected per-OS |
 | `chromeProfile` | Profile folder name (e.g. `Default`, `Profile 1`) | `Default` |
@@ -302,8 +304,9 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 ## Safety notes
 
 - This server only automates a browser you already control and are signed into — it does not store, transmit, or need your Google credentials.
-- Separate from credentials: the server deliberately minimizes automation fingerprints — it launches Chrome with `--disable-blink-features=AutomationControlled` (so `navigator.webdriver` reads false) and runs your signed-in profile from a temp copy. That is bot-detection evasion against Google's own sign-in/abuse checks (the "this browser may not be secure" block), distinct from the credential story above. By using this tool you accept that tradeoff relative to Google's Terms of Service.
-- Image and video generation **consume Google Flow credits**. All mutating tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
+- Chrome is launched without the unsupported `--disable-blink-features=AutomationControlled` flag. Direct launches use a temporary copy of your configured profile; Google may still require manual sign-in or additional verification. The server does not bypass those checks.
+- Video generation can consume Google Flow credits; image generations can be zero-credit. Tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
+- The native character image form does not expose the regular image-composer credit label. If the account owner confirms free character image pricing, configure `freeCharacterImages: {"account":"you@example.com","models":["Nano Banana 2.1"]}` in `config/flow.config.json`. Confirmation requires that exact signed-in account, native character form, prepared description and allowlisted image model. The result labels this as account-owner policy, not an observed UI quote. Video, unknown models and conflicting credit labels never inherit this policy.
 - `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
 - `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
 - `config/flow.config.json` is gitignored — do not commit it. Runtime caches (`flow.models.json`, `selectors.map.json`, `flow.projects.json`) are gitignored too.
@@ -313,3 +316,6 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+# Project credit budget
+
+Live image, video and character submissions share a persistent **50-credit total budget per account/project** by default. Set `projectCreditCap` in `config/flow.config.json` to change it. Optional `max_credits` only adds a per-submission ceiling; it does not increase the project budget. Quotes are reserved before clicking Generate and remain reserved for uncertain/failed submissions to avoid accidental overspending. This ledger tracks locally authorized quotes, not Google's billing balance; earlier generations made before this feature are not automatically reconstructed. Restart the MCP after rebuilding to apply code changes.

@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import {
   insertMentionReference,
   insertMentionReferences,
+  listMentionOptionsDetailed,
 } from '../src/navigation/mentions.js';
 import { readComposerSnapshot } from '../src/browser/composer-state.js';
 
@@ -72,6 +73,48 @@ afterAll(async () => {
 });
 
 describe('W04 behavioral mention exact insertion', () => {
+  it('lists only scoped ready titles, excluding preview status and page decoys', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(PICKER_FIXTURE);
+      await page.locator('#rows').evaluate(el => {
+        el.innerHTML = '<div role="option"><span>Generating preview</span><span class="asset-title">Untitled</span></div>'
+          + '<div role="option"><span>Preview</span><span class="asset-title">Ready reference…</span><span>Image</span></div>';
+      });
+      const out = await listMentionOptionsDetailed(page, page.locator('#prompt'));
+      expect(out.names).toEqual(['Ready reference…']);
+      expect(out.status).toBe('ok');
+    } finally { await page.close(); }
+  });
+
+  it('reports pending previews as unavailable, not usable names or an empty project', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(PICKER_FIXTURE);
+      await page.locator('#rows').evaluate(el => {
+        el.innerHTML = '<div role="option">Generating preview<span class="asset-title">Untitled</span></div>';
+      });
+      const out = await listMentionOptionsDetailed(page, page.locator('#prompt'));
+      expect(out.names).toEqual([]);
+      expect(out.status).toBe('failed');
+      expect(out.reason).toContain('still generating');
+    } finally { await page.close(); }
+  });
+
+  it('selects a displayed truncated title before searching for a literal ellipsis', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.setContent(PICKER_FIXTURE);
+      await page.locator('#rows [role=option]').first().evaluate(el => {
+        el.dataset.title = 'A long reference…';
+        el.innerHTML = '<span class="asset-title">A long reference…</span><span>Image</span>';
+      });
+      expect(await insertMentionReference(page, page.locator('#prompt'), 'A long reference…')).toBe(true);
+      expect(await page.locator('#search').inputValue()).toBe('');
+      expect(await page.locator('#decoy').getAttribute('data-clicked')).toBe(null);
+    } finally { await page.close(); }
+  });
+
   it('inserts the exact title with stable identity, never prefix/decoy', async () => {
     const page = await browser.newPage();
     try {

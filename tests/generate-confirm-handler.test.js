@@ -8,6 +8,9 @@ vi.mock('../src/browser/safe-actions.js', async (importOriginal) => {
   const orig = await importOriginal();
   return {
     ...orig,
+    openBarSettings: async () => ({ panel: { evaluate: async () => globalThis.__confirmCostText ? [globalThis.__confirmCostText] : [] } }),
+    isVerifiedSettingsPanel: async () => ({ isSettings: true }),
+    closeSettingsPanel: async () => true,
     findActionButton: async () => ({
       locator: {
         isDisabled: async () => false,
@@ -21,12 +24,20 @@ vi.mock('../src/utils/screenshots.js', () => ({
   takeScreenshot: async () => null,
 }));
 
+vi.mock('../src/utils/project-credit-budget.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  reserveProjectCredits: vi.fn(() => ({ cap: 50, reserved: 1, remaining: 49 })),
+}));
+
 import { jobQueue } from '../src/queue/job-queue.js';
 import { handleGenerateConfirm } from '../src/tools/generate-confirm.js';
 
-function makeFakePage({ baseline, after, costText = '1 credits total' }) {
+function makeFakePage({ baseline, after, costText = '1 credits total', blocked = false, blockedAfterClick = false }) {
+  globalThis.__confirmCostText = costText;
   let snapshotCalls = 0;
   return {
+    content: async () => '',
+    getByText: () => ({ first: () => ({ isVisible: async () => blocked || (blockedAfterClick && globalThis.__confirmClicked) }) }),
     evaluate: async (fn) => {
       const src = String(typeof fn === 'function' ? fn.toString() : fn);
       if (src.includes('credits')) return costText;
@@ -48,6 +59,7 @@ describe('handleGenerateConfirm short-wait handler', () => {
     jobQueue.reset();
     delete globalThis.__confirmFakePage;
     delete globalThis.__confirmClicked;
+    delete globalThis.__confirmCostText;
   });
 
   it('detects a new media id on the first poll and completes promptly (no 120s block)', async () => {
@@ -115,6 +127,36 @@ describe('handleGenerateConfirm short-wait handler', () => {
     globalThis.__confirmFakePage = makeFakePage({baseline: {}, after: {}, costText: null});
     await expect(handleGenerateConfirm({job_id: prep.id})).rejects.toThrow(/unknown quote is not zero/);
     expect(globalThis.__confirmClicked).toBe(false);
+  });
+
+  it('does not click when Flow already reports insufficient credits', async () => {
+    const prep = jobQueue.createJob('video_generation', {});
+    jobQueue.startJob(prep.id);
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'video'});
+    globalThis.__confirmFakePage = makeFakePage({baseline: {}, after: {}, blocked: true});
+    const result = await handleGenerateConfirm({job_id: prep.id});
+    expect(result).toMatchObject({status: 'blocked', reason: 'insufficient_credits', clicked: false});
+    expect(globalThis.__confirmClicked).toBe(false);
+  });
+
+  it('reports a post-click credit rejection as blocked, never submitted', async () => {
+    const prep = jobQueue.createJob('video_generation', {});
+    jobQueue.startJob(prep.id);
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'video'});
+    globalThis.__confirmFakePage = makeFakePage({baseline: {}, after: {}, blockedAfterClick: true});
+    const result = await handleGenerateConfirm({job_id: prep.id, wait_ms: 1000});
+    expect(result).toMatchObject({status: 'blocked', remoteStatus: 'blocked', clicked: true});
+    expect(result.message).toMatch(/not confirmed/);
+  });
+
+  it('does not mistake an exhausted NEXT-generation balance for a rejected cleared draft', async () => {
+    const prep = jobQueue.createJob('video_generation', {});
+    jobQueue.startJob(prep.id);
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'video'});
+    globalThis.__confirmFakePage = makeFakePage({baseline: {promptText: 'Create video'}, after: {promptText: ''}, blockedAfterClick: true});
+    const result = await handleGenerateConfirm({job_id: prep.id, wait_ms: 1000});
+    expect(result.status).toBe('submitted');
+    expect(result.remoteStatus).toBe('pending');
   });
 
   it('refuses unverified frame slots even on an old ready preparation', async () => {

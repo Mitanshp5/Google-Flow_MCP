@@ -41,6 +41,7 @@ const RESULT_ITEM_SELECTORS = [
 // W04: scoped real picker roots. Searches/selections must run INSIDE the
 // asset-picker panel, never as page-wide hasText scans.
 export const PICKER_ROOT_SELECTORS = [
+  'flow-add-menu-popover-content:has(input[placeholder*="Search assets" i])',
   '[role="dialog"]:has(input[placeholder*="Search assets" i])',
   '[role="dialog"]:has(input[placeholder*="Search" i])',
   '.cdk-overlay-pane:has(input[placeholder*="Search" i])',
@@ -124,6 +125,18 @@ export function stripTypeLabelSuffix(text) {
     }
   }
   return text;
+}
+
+// Use the title node, not thumbnail status/preview text. Pending rows are
+// not usable references yet and must never become names such as
+// "Generating previewUntitled".
+export function readPickerRow(row) {
+  const text = (row.textContent || '').trim();
+  const pending = /generating preview/i.test(text)
+    || row.matches('[aria-busy="true"], [aria-disabled="true"], [disabled]')
+    || !!row.querySelector('[role="progressbar"], mat-progress-spinner');
+  const title = row.querySelector('.asset-title');
+  return { pending, title: pending ? '' : (title?.textContent || text).trim() };
 }
 
 async function findVisible(page, selectors) {
@@ -270,24 +283,32 @@ export async function listMentionOptionsDetailed(page, inputLocator) {
     return { status: 'failed', names: [], reason: 'picker did not open' };
   }
 
-  const rawNames = await page.evaluate((sels) => {
-    for (const sel of sels) {
-      const items = Array.from(document.querySelectorAll(sel));
-      const texts = items
-        .map(i => (i.textContent || '').trim())
-        .filter(t => t.length > 1 && t.length < 200);
-      if (texts.length) return texts;
+  const root = await findPickerRoot(page);
+  if (!root) {
+    await closeMentionPopup(page, inputLocator, popup.triggerDelta);
+    return { status: 'failed', names: [], reason: 'picker root not found' };
+  }
+  const rawNames = [];
+  let pending = false;
+  for (const sel of RESULT_ITEM_SELECTORS) {
+    const rows = await root.locator(sel).all();
+    for (const row of rows) {
+      if (!(await row.isVisible())) continue;
+      const info = await row.evaluate(readPickerRow);
+      pending ||= info.pending;
+      if (info.title.length > 1 && info.title.length < 200) rawNames.push(info.title);
     }
-    return [];
-  }, RESULT_ITEM_SELECTORS);
+    if (rawNames.length || pending) break;
+  }
 
-  const names = rawNames.map((t) => stripTypeLabelSuffix(normalizeTitle(t))).filter(Boolean);
+  const names = [...new Set(rawNames.map((t) => stripTypeLabelSuffix(normalizeTitle(t))).filter(Boolean))];
 
   if (popup.beforeSnapshot) {
     await restoreComposerAfterPicker(page, inputLocator, popup.beforeSnapshot, {triggerDelta:popup.triggerDelta || '@'});
   } else {
     await closeMentionPopup(page, inputLocator, popup.triggerDelta || '@');
   }
+  if (names.length === 0 && pending) return { status: 'failed', names, reason: 'references still generating previews; wait for rendering to finish and list again' };
   if (names.length === 0) return { status: 'empty', names, reason: 'picker opened with no rows' };
   return { status: 'ok', names, reason: 'picker opened' };
 }
@@ -312,33 +333,45 @@ export async function insertMentionReference(page, inputLocator, name) {
     return false;
   }
 
-  // Filter results via the panel's "Search assets" box (full title query).
-  if (popup.searchInput) {
-    await popup.searchInput.click();
-    await popup.searchInput.fill('');
-    await page.waitForTimeout(200);
-    await popup.searchInput.type(buildPickerQuery(name), { delay: 30 });
-    await page.waitForTimeout(900);
-  }
-
   // W04: scoped exact row match inside the picker root. Never page-wide
   // substring, never first-row fallback.
   const pickerRoot = await findPickerRoot(page);
-  const scope = pickerRoot || page;
+  if (!pickerRoot) {
+    await closeMentionPopup(page, inputLocator, popup.triggerDelta);
+    return false;
+  }
+  const scope = pickerRoot;
   let itemClicked = false;
-  for (const sel of RESULT_ITEM_SELECTORS) {
-    const candidates = await scope.locator(sel).all().catch(() => []);
-    for (const cand of candidates) {
-      if (!(await cand.isVisible().catch(() => false))) continue;
-      const rowText = ((await cand.textContent().catch(() => '')) || '').trim();
-      if (isExactRowMatch(rowText, name)) {
-        await cand.click();
+  // Try visible exact titles before search: Flow displays literal ellipses
+  // in titles, which its search does not match. Never choose a prefix row.
+  for (let pass = 0; pass < 2 && !itemClicked; pass++) {
+    if (pass === 1) {
+      if (!popup.searchInput) break;
+      await popup.searchInput.fill(buildPickerQuery(name).replace(/(?:…|\.\.\.)$/, ''));
+      await page.waitForTimeout(900);
+    }
+    let ambiguous = false;
+    for (const sel of RESULT_ITEM_SELECTORS) {
+      const candidates = await scope.locator(sel).all().catch(() => []);
+      const matches = [];
+      for (const cand of candidates) {
+        if (!(await cand.isVisible().catch(() => false))) continue;
+        const row = await cand.evaluate(readPickerRow);
+        if (!row.pending && isExactRowMatch(row.title, name)) matches.push(cand);
+      }
+      if (matches.length > 1) {
+        ambiguous = true;
+        logger.warn('Ambiguous asset title in @ panel', { name });
+        break;
+      }
+      if (matches.length === 1) {
+        await matches[0].click();
         itemClicked = true;
         logger.info('Matched asset row by exact title', { name });
         break;
       }
     }
-    if (itemClicked) break;
+    if (ambiguous) break;
   }
 
   // FAIL CLOSED: never click the first row as a fallback. Names are truncated

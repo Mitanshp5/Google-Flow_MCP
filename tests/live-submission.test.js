@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { w00LaunchBrowser, w00CloseBrowser } from './helpers/w00-dom.js';
-import { createLiveAuthorization } from '../src/domain/live-submission.js';
+import { createLiveAuthorization, observeImageSubmission, rpcContainsPrompt } from '../src/domain/live-submission.js';
 import { buildHandlerSubmissionContext } from '../src/domain/handler-submission-context.js';
 import { executeDurableSubmission } from '../src/domain/submission-adapter.js';
 import { withUiTransaction } from '../src/browser/ui-transaction.js';
@@ -14,11 +14,40 @@ const html = `<!doctype html><meta charset="utf-8"><body><span data-account-emai
 <div id="composer" data-account="creator@example.com" data-project="live-test">
 <div contenteditable="true">a quiet lake</div><div id="chips"></div><div id="slots"></div><div id="uploads"></div>
 <button aria-label="Settings trigger" onclick="openPanel()">Nano Banana Pro 9:16 x1</button>
-<button aria-pressed="false">Agent</button><button aria-label="Generate" onclick="window.clicks=(window.clicks||0)+1">Generate</button></div>
+<button aria-pressed="false">Agent</button><button aria-label="Generate" onclick="window.clicks=(window.clicks||0)+1;fetch('/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=ogiZ0b',{method:'POST',body:new URLSearchParams({'f.req':'a quiet lake'})})">Generate</button></div>
 <div role="dialog" id="panel"><button class="mat-mdc-menu-trigger">Nano Banana Pro arrow_drop_down</button>
 <button aria-pressed="true">Image</button><button>Video</button><button aria-pressed="true">9:16</button><button aria-pressed="true">x1</button>
 <p>Generating will use 1 credits total</p></div>
 <script>const panel=document.getElementById('panel');const markup=panel.innerHTML;function openPanel(){panel.innerHTML=markup;panel.style.display='block'}document.addEventListener('keydown',e=>{if(e.key==='Escape'){panel.innerHTML='';panel.style.display='none'}})</script></body>`;
+
+it('waits for generation acknowledgement, not the unrelated prompt-save RPC', async () => {
+  const response = rpc => ({url:()=>`https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpc}`,
+    request:()=>({method:()=> 'POST',postData:()=>new URLSearchParams({'f.req':'a quiet lake'}).toString()}),
+    finished:async()=>{},ok:()=>true,text:async()=> '["wrb.fr","ogiZ0b","queued"]'});
+  const observed = await observeImageSubmission({waitForResponse:async predicate=>{
+    expect(predicate(response('WuwhI'))).toBe(false);
+    expect(predicate(response('ogiZ0b'))).toBe(true);
+    return response('ogiZ0b');
+  }}, 'a quiet lake');
+  expect(observed.acknowledged).toBe(true);
+});
+
+it('matches complete Unicode/multiline prompts inside nested batchexecute strings',()=>{
+  const prompt='Reference A — device\nElectric-blue light, "premium".';
+  const payload=JSON.stringify([[['ogiZ0b',JSON.stringify([prompt])]]]);
+  expect(rpcContainsPrompt(payload,prompt)).toBe(true);
+  expect(rpcContainsPrompt(payload,'A different prompt')).toBe(false);
+});
+
+it('accepts a newly rendered project image as evidence even when an RPC ID changes',async()=>{
+  const result=await observeImageSubmission({
+    url:()=> 'https://flow.google.com/project/test',
+    evaluate:async()=>['old-image'],
+    waitForResponse:async()=>{throw new Error('RPC not recognized');},
+    waitForFunction:async(fn,args)=>{expect(args.ids).toEqual(['old-image']);expect(String(fn)).toContain('naturalWidth');return {};},
+  },'Complete authored prompt');
+  expect(result).toMatchObject({acknowledged:true,source:'new-rendered-project-image'});
+});
 
 describe('explicit live-browser submission (intercepted browser; no remote spend)', { timeout: 30000 }, () => {
   let page;
@@ -38,14 +67,14 @@ describe('explicit live-browser submission (intercepted browser; no remote spend
   async function context(epoch, maxCredits = 2) {
     return buildHandlerSubmissionContext({ page, epoch, requestPayload: payload,
       inputLocator: page.locator('[contenteditable]'),
-      liveAuthorization: createLiveAuthorization({ page, confirmed: true, maxCredits }) });
+      liveAuthorization: await createLiveAuthorization({ page, confirmed: true, maxCredits }) });
   }
   async function replaceFixture(body) {
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body }));
     await page.reload();
   }
-  it('does not authorize prepare-only requests', () => {
-    expect(createLiveAuthorization({ page, confirmed: false })).toBeNull();
+  it('does not authorize prepare-only requests', async () => {
+    expect(await createLiveAuthorization({ page, confirmed: false })).toBeNull();
   });
   it('submits once after common policy and durable approval consumption', async () => {
     await withUiTransaction(async ({ epoch }) => {
@@ -84,7 +113,7 @@ describe('explicit live-browser submission (intercepted browser; no remote spend
     await replaceFixture(html.replaceAll('x1', 'x2').replace('Generating will use 1 credits total', '1 credits'));
     await withUiTransaction(async ({ epoch }) => {
       const ctx = await buildHandlerSubmissionContext({ page, epoch, requestPayload: { ...payload, quantity: 2 },
-        inputLocator: page.locator('[contenteditable]'), liveAuthorization: createLiveAuthorization({ page, confirmed: true }) });
+        inputLocator: page.locator('[contenteditable]'), liveAuthorization: await createLiveAuthorization({ page, confirmed: true }) });
       expect(ctx.quote).toBeNull();
       await expect(executeDurableSubmission({ page, epoch, ...ctx })).rejects.toBeTruthy();
       expect(await page.evaluate(() => window.clicks || 0)).toBe(0);
@@ -105,7 +134,7 @@ describe('explicit live-browser submission (intercepted browser; no remote spend
     await withUiTransaction(async ({ epoch }) => {
       const ctx = await buildHandlerSubmissionContext({ page, epoch, requestPayload: payload,
         inputLocator: page.locator('[contenteditable]'), mentionNames: ['Reference'],
-        liveAuthorization: createLiveAuthorization({ page, confirmed: true }) });
+        liveAuthorization: await createLiveAuthorization({ page, confirmed: true }) });
       expect(ctx.requestPayload.references).toEqual([{ assetId: 'asset-1', title: 'Reference', role: 'ingredient' }]);
       expect((await executeDurableSubmission({ page, epoch, ...ctx })).status).toBe('submitted');
     });
@@ -118,9 +147,22 @@ describe('explicit live-browser submission (intercepted browser; no remote spend
       expect(await page.evaluate(() => window.clicks || 0)).toBe(0);
     });
   });
-  it('rejects invalid credit limits', () => {
+  it('accepts the observed account when no email is pinned', async () => {
+    vi.stubEnv('FLOW_EXPECTED_ACCOUNT', '');
+    await withUiTransaction(async ({ epoch }) => {
+      const ctx = await context(epoch);
+      expect((await executeDurableSubmission({ page, epoch, ...ctx })).status).toBe('submitted');
+      expect(await page.evaluate(() => window.clicks)).toBe(1);
+    });
+  });
+  it('rejects an unidentified account when no email is pinned', async () => {
+    vi.stubEnv('FLOW_EXPECTED_ACCOUNT', '');
+    await replaceFixture('<body><button>Sign in</button></body>');
+    await expect(createLiveAuthorization({ page, confirmed: true })).rejects.toMatchObject({ code: 'MANUAL_VERIFICATION_REQUIRED' });
+  });
+  it('rejects invalid credit limits', async () => {
     for (const maxCredits of [-1, NaN, Infinity]) {
-      expect(() => createLiveAuthorization({ page, confirmed: true, maxCredits })).toThrow();
+      await expect(createLiveAuthorization({ page, confirmed: true, maxCredits })).rejects.toThrow();
     }
   });
 });

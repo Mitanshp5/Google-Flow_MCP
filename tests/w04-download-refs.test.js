@@ -62,6 +62,28 @@ afterAll(async () => {
 });
 
 describe('W04 behavioral download enumeration + menu + bytes', () => {
+  it('keeps signed-thumbnail videos selectable after reload without inventing media UUIDs', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route('https://flow.google.com/asb/**', route => route.fulfill({ status: 200, body: '' }));
+      await page.setContent(`
+        <flow-video-tile style="display:block"><img src="https://flow.google.com/asb/opaque-one" width="20" height="20"><span class="footer-title">First clip</span></flow-video-tile>
+        <flow-video-tile style="display:block"><video src="https://flow.google.com/asb/opaque-two" width="20" height="20"></video><span class="footer-title">Second clip</span></flow-video-tile>
+      `);
+      const first = await enumerateAssetTiles(page);
+      expect(first).toHaveLength(2);
+      expect(first[0]).toMatchObject({ kind: 'video', title: 'First clip', identityKind: 'thumbnail-url' });
+      expect(first[0].assetId).toMatch(/^thumbnail:[a-f0-9]{64}$/);
+      expect(first[0].assetId).not.toBe(first[1].assetId);
+      expect(await enumerateAssetTiles(page)).toEqual(first);
+      const result = await handleDownloadWithPage(page, {}, {takeScreenshotFn: async () => null});
+      expect(result.status).toBe('ambiguous');
+      expect(result.assets).toEqual(expect.arrayContaining([expect.objectContaining({title: 'First clip', identityKind: 'thumbnail-url'})]));
+    } finally {
+      await page.close();
+    }
+  });
+
   it('enumerates DOM tiles and downloads the verified newest via its menu', async () => {
     const ctx = await browser.newContext({ acceptDownloads: true });
     const page = await ctx.newPage();

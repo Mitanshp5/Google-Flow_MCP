@@ -12,6 +12,7 @@ export async function renameCharacterTitle(page, newName) {
   logger.info('Renaming character...', { newName });
 
   const inputSelectors = [
+    'input[aria-label="Character name"]',
     'input[placeholder*="Character Name" i]',
     'input[placeholder="Character Name"]',
     'input[value*="Character" i]',
@@ -22,17 +23,41 @@ export async function renameCharacterTitle(page, newName) {
       const el = page.locator(sel).first();
       if (!(await el.isVisible().catch(() => false))) continue;
 
+      const nativeName = sel === 'input[aria-label="Character name"]';
+      let saved = null;
+      if (nativeName) {
+        if (await el.inputValue() === newName) return true;
+        const pencil = page.getByRole('button', { name: 'Edit name', exact: true });
+        if (await pencil.isVisible().catch(() => false)) {
+          await pencil.click();
+          // Flow debounces the actual title update. Leaving/reloading before
+          // its response cancels the save even though inputValue is correct.
+          saved = page.waitForResponse(response => {
+            if (!response.url().startsWith('https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute')) return false;
+            const payload = new URLSearchParams(response.request().postData() || '').get('f.req') || '';
+            return response.ok() && payload.includes(newName);
+          }, { timeout: 10000 }).then(async response => {
+            await response.finished();
+            return (await response.text()).includes(newName);
+          }).catch(() => false);
+        }
+      }
+
       await el.click();
-      await page.waitForTimeout(200);
-      await el.fill('');
       await page.waitForTimeout(200);
       await el.fill(newName);
       await page.waitForTimeout(200);
-      await page.keyboard.press('Enter');
+      // The native name field saves on leaving edit mode. Enter is not its
+      // commit action and can leave the old persisted title unchanged.
+      if (nativeName) await el.press('Tab');
+      else await page.keyboard.press('Enter');
+      await el.blur();
+      if (saved && !(await saved)) return false;
       await page.waitForTimeout(600);
 
-      logger.info('Character renamed via input', { newName, selector: sel });
-      return true;
+      const verified = await el.inputValue() === newName;
+      logger.info('Character rename read-back', { newName, selector: sel, verified });
+      return verified;
     } catch (e) {
       logger.warn('Failed rename attempt via input', { selector: sel, error: e.message });
     }

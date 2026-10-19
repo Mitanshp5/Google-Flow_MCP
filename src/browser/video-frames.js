@@ -3,6 +3,12 @@ import {uploadReferences} from './upload.js';
 import {readComposerReferences} from './composer-references.js';
 
 export async function setVideoReferenceMode(page, mode) {
+  // The live composer can already expose Start/End slots even when settings
+  // has no reference-mode radio. Positive slot structure is authoritative.
+  const current = await readComposerReferences(page);
+  if (current?.mode === mode && (mode === 'frames' ? current.slotsObservable : current.chipsObservable)) {
+    return {ok:true, verified:true, kind:'reference_mode', detail:mode};
+  }
   const {panel, error} = await openBarSettings(page);
   if (!panel) return {ok:false, verified:false, kind:'reference_mode', detail:error};
   try {

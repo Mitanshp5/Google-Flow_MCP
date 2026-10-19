@@ -1,8 +1,9 @@
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { saveCatalog, loadCatalog, getUniverse } from '../utils/models.js';
-import { setPromptBarModel } from '../browser/safe-actions.js';
+import { setPromptBarModel, setPromptBarMode, readToolState, findSettingsPanel } from '../browser/safe-actions.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
+import { decontaminateModelField } from '../browser/capabilities.js';
 
 const IMAGE_HINTS = ['nano', 'banana', 'imagen'];
 const VIDEO_HINTS = ['veo', 'omni', 'kling', 'sora', 'seedance', 'hailuo', 'wan'];
@@ -305,8 +306,8 @@ async function closeSettingsPanel(page) {
 }
 
 async function panelHandle(page) {
-  return page.locator('[role="dialog"], [role="menu"], [role="listbox"]').first()
-    .elementHandle().catch(() => null);
+  const panel = await findSettingsPanel(page);
+  return panel ? panel.elementHandle().catch(() => null) : null;
 }
 
 /**
@@ -354,7 +355,7 @@ async function readSelectedModelRow(page, deadline) {
           /nano|banana|imagen|veo|omni/i.test(b.textContent || ''));
       return ((row?.textContent || '').replace(/arrow_drop_down|arrow_drop_up/g, '').trim().replace(/\s+/g, ' '));
     }, handle).catch(() => '');
-    return text;
+    return decontaminateModelField(text);
   } finally {
     await closeSettingsPanel(page);
   }
@@ -363,7 +364,7 @@ async function readSelectedModelRow(page, deadline) {
 async function scanPanelCapabilities(page) {
   const handle = await awaitSettingsPanel(page, 4000);
   if (!handle) return null;
-  return page.evaluate((root, markers) => {
+  return page.evaluate(({ root, markers }) => {
     const els = Array.from(root.querySelectorAll('[role="option"], [role="menuitem"], [role="tab"], li, button'));
     const shown = (el) => {
       const r = el.getBoundingClientRect();
@@ -383,10 +384,10 @@ async function scanPanelCapabilities(page) {
       out[m.key] = { supported: hits.length > 0, samples: hits };
     }
     return out;
-  }, handle, CAPABILITY_MARKERS.map((m) => ({
+  }, { root: handle, markers: CAPABILITY_MARKERS.map((m) => ({
     key: m.key,
     patterns: m.patterns.map((r) => ({ src: r.source, flags: r.flags })),
-  }))).catch(() => null);
+  })) }).catch(() => null);
 }
 
 /**
@@ -411,6 +412,8 @@ export async function discoverCapabilities(page, opts = {}) {
       ? opts.models
       : getUniverse().videoModels;
 
+    const entryState = await readToolState(page).catch(() => null);
+    const entryMode = entryState?.mode;
     const entryModel = await readSelectedModelRow(page, deadline);
     const probed = [];
     const skipped = [];
@@ -421,6 +424,12 @@ export async function discoverCapabilities(page, opts = {}) {
       }
       let sel = null;
       try {
+        const mode = IMAGE_HINTS.some(h => model.toLowerCase().includes(h)) ? 'Image' : 'Video';
+        const switched = await setPromptBarMode(page, mode);
+        if (!switched?.ok) {
+          skipped.push({ model, reason: 'mode-select-unverified' });
+          continue;
+        }
         sel = await setPromptBarModel(page, model);
       } catch (e) {
         skipped.push({ model, reason: `select-threw: ${e.message}` });
@@ -456,6 +465,10 @@ export async function discoverCapabilities(page, opts = {}) {
     let restored = false;
     if (entryModel) {
       try {
+        if (entryMode) {
+          const modeBack = await setPromptBarMode(page, entryMode === 'video' ? 'Video' : 'Image');
+          if (!modeBack?.ok) throw new Error('Original mode could not be restored');
+        }
         const back = await setPromptBarModel(page, entryModel);
         restored = !!back?.ok;
       } catch (e) {

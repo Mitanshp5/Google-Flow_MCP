@@ -3,9 +3,9 @@ import { getPage } from '../browser/connect.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { detectPageElements } from '../browser/safe-actions.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { get } from '../utils/config.js';
-import { ensureProjectInContext, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
+import { ensureProjectInContext, ensureProjectLibrary, navigateSidebarDetailed, extractProjectId } from '../navigation/project-navigator.js';
 import { isErrorHtml } from '../browser/app-state.js';
+import { withUiTransaction } from '../browser/ui-transaction.js';
 
 /**
  * Open the Character page for the current/target project.
@@ -13,6 +13,7 @@ import { isErrorHtml } from '../browser/app-state.js';
  * NOTE: F02 route correction: Flow uses singular "/project/{projectId}/character".
  */
 export async function handleOpenCharacters(args = {}) {
+  return withUiTransaction(async () => {
   const page = getPage();
 
   const project = await ensureProjectInContext(page, {
@@ -26,10 +27,16 @@ export async function handleOpenCharacters(args = {}) {
     throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, `Could not determine project ID from URL: ${project.url}`);
   }
 
-  const characterUrl = `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`;
-  logger.info('Opening Character page', { characterUrl });
-
-  await page.goto(characterUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  logger.info('Opening project Characters library', { projectId });
+  await ensureProjectLibrary(page);
+  const nav = await navigateSidebarDetailed(page, 'Characters');
+  if (!nav.ok) {
+    const failedTitle = await page.title().catch(()=>'');
+    const failedBody = await page.textContent('body').catch(()=>'');
+    const missing = isErrorHtml({title:failedTitle,bodyText:failedBody,url:page.url()});
+    return {status:'blocked',reason:missing?'page_not_found':'character_feature_unverified',url:page.url(),
+      navigation_verified:false,blocker:nav.blocker,message:'Characters library could not be opened; no creation route was substituted.'};
+  }
   await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(2000);
 
@@ -53,6 +60,8 @@ export async function handleOpenCharacters(args = {}) {
   const screenshot = await takeScreenshot(page, 'characters-page');
 
   const feature = await page.getByRole('heading', { name: /^characters?$/i }).first().isVisible().catch(() => false)
+    || await page.locator('flow-character-tile').first().isVisible().catch(() => false)
+    || await page.getByRole('button', { name: /^(?:New|Create) character$/i }).isVisible().catch(() => false)
     || await page.locator('[placeholder*="Describe your character" i], [aria-label*="Describe your character" i]').first().isVisible().catch(() => false)
     || /build and reuse characters|the eccentric|the professional|the wildcard|the familiar|the wicked|the fantastical/i.test(bodyText);
   if (!feature) {
@@ -67,4 +76,5 @@ export async function handleOpenCharacters(args = {}) {
     elements,
     screenshot,
   };
+  });
 }

@@ -4,6 +4,7 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { getPage } from './connect.js';
 import { getSelectors } from '../utils/selectors.js';
 import { uploadReferences } from './upload.js';
+import { decontaminateModelField } from './capabilities.js';
 
 function actionDelay() {
   return get('actionDelayMs', 800);
@@ -288,6 +289,15 @@ async function pickPanelToggle(page, panel, kind, wantText, matchRe) {
     opt = panel.locator('button, [role="option"], [role="menuitem"], li').filter({ hasText: containsRe }).first();
   }
   if (!(await opt.isVisible({ timeout: 4000 }).catch(() => false))) {
+    // Veo exposes fixed 8s/720p values on the composer chip rather than
+    // selectable controls. Exact read-back is sufficient; never invent a
+    // selectable option or substitute a different requested value.
+    if (kind === 'quality' || kind === 'duration') {
+      const actual = await readToolState(page);
+      if (actual[kind] === wantText) {
+        return { ok: true, verified: true, kind, detail: `${wantText} (fixed, composer read-back)` };
+      }
+    }
     const names = await panel.evaluate((p) =>
       [...new Set(Array.from(p.querySelectorAll('button, [role="option"], [role="menuitem"], li'))
         .map(e => (e.innerText || e.textContent || '').trim().replace(/\s+/g, ' '))
@@ -465,7 +475,7 @@ export async function setPromptBarDuration(page, duration) {
   return clickBarOption(page, 'duration', want, new RegExp(`^${want}$`, 'i'));
 }
 
-/** Set model via the bottom-bar settings panel. Exact name first, family fallback.
+/** Set model via the bottom-bar settings panel. Exact model names only.
  * The model row is a nested DROPDOWN: click row → click model in expanded
  * list → close → verify via chip read-back. */
 export async function setPromptBarModel(page, model) {
@@ -493,30 +503,28 @@ export async function setPromptBarModel(page, model) {
     const rowNow = await readRow(panel);
     // Full-name match only (normalized): a family-only match is NOT enough —
     // "Nano Banana 2" must not satisfy "Nano Banana Pro".
-    const normRow = rowNow.toLowerCase()
-      .replace(/arrow_drop_down|arrow_drop_up/g, '')
-      .replace(/^[^a-z0-9]+/u, '').replace(/\s+/g, ' ').trim();
-    if (normRow && normRow.includes(want.toLowerCase())) {
+    const normRow = decontaminateModelField(rowNow).toLowerCase();
+    if (normRow && normRow === want.toLowerCase()) {
       logger.info('Model already selected in settings row — no change', { want, row: rowNow });
       await closeSettingsPanel(page);
       return { ok: true, verified: true, kind: 'model', detail: want };
     }
-    const esc = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Expand the model dropdown row (shows current model + chevron).
     const row = panel.locator('button').filter({ hasText: /nano|banana|imagen|veo|omni/i }).first();
     if (await row.isVisible().catch(() => false)) {
       await row.click({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(1500);
     }
-    const names = await panel.evaluate((p) =>
-      [...new Set(Array.from(p.querySelectorAll('button, flow-menu-item, [role="option"], [role="menuitem"], li'))
+    const names = await page.evaluate(() =>
+      [...new Set(Array.from(document.querySelectorAll('.cdk-overlay-pane flow-menu-item, .cdk-overlay-pane [role="option"], .cdk-overlay-pane [role="menuitem"], [role="listbox"] [role="option"]'))
+        .filter(e => {
+          const r = e.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && !e.matches('[disabled], [aria-disabled="true"]');
+        })
         .map(e => (e.innerText || e.textContent || '').trim().replace(/\s+/g, ' '))
         .filter(x => x.length > 0 && x.length < 80))].slice(0, 40)).catch(() => []);
     logger.info('Settings-panel model options', { sample: names.slice(0, 20) });
-    const family = want.split(' ')[0];
-    const hit = names.find(n => n.toLowerCase() === want.toLowerCase())
-      || names.find(n => n.toLowerCase().includes(want.toLowerCase()))
-      || names.find(n => n.toLowerCase().includes(family.toLowerCase()));
+    const hit = names.find(n => decontaminateModelField(n).toLowerCase() === want.toLowerCase());
     if (hit) {
       // The model dropdown (mat-menu) renders its options in a separate
       // overlay and icon ligatures glue to labels without spaces in
@@ -534,7 +542,9 @@ export async function setPromptBarModel(page, model) {
             // Model options are FLOW-MENU-ITEM custom elements (mat-menu).
             for (const b of pane.querySelectorAll('flow-menu-item, button, a, [role="option"], [role="menuitem"], li, [mat-menu-item]')) {
               const t = norm(b.innerText || b.textContent);
-              if (!t.includes(wantLower)) continue;
+               const label = t.replace(/arrow_drop_down|arrow_drop_up|apps_spark_2|volume_up|tune|settings_2/g, ' ')
+                 .replace(/^[^a-z0-9]+/u, '').replace(/\s+/g, ' ').trim();
+               if (label !== wantLower || b.matches('[disabled], [aria-disabled="true"]')) continue;
               const cls = (b.className?.baseVal ?? b.className ?? '').toString();
               if (/menu-trigger/.test(cls)) continue; // collapsed row, not an option
               const br = b.getBoundingClientRect();
@@ -585,16 +595,13 @@ export async function setPromptBarModel(page, model) {
       } catch { /* ignore */ }
     }
     const after = await readToolState(page).catch(() => null);
-    const normHit = String(rowText || '').toLowerCase()
-      .replace(/arrow_drop_down|arrow_drop_up/g, '')
-      .replace(/^[^a-z0-9]+/u, '').replace(/\s+/g, ' ').trim();
-    const rowHit = normHit && normHit.includes(want.toLowerCase());
+    const normHit = decontaminateModelField(rowText).toLowerCase();
+    const rowHit = normHit && normHit === want.toLowerCase();
     const ok = !!rowHit;
     if (ok) {
       logger.info('Model set + row verified', { want, row: rowText, chip: after?.modelChip });
       return { ok: true, verified: true, kind: 'model', detail: want };
     }
-    void esc;
     return fail(`model "${want}" not confirmed (hit=${hit || 'none'}, row=${rowText || 'none'}, chip=${after?.modelChip || 'none'})`);
   } catch (e) {
     return fail(e.message);
@@ -743,7 +750,7 @@ export async function attachReferenceFiles(page, inputLocator, files, opts = {})
     return {
       ...result,
       attached: result.acknowledged?.length || 0,
-      notes: [...(result.notes || []), ...(result.reason ? [result.reason] : [])],
+      notes: [...new Set([...(result.notes || []), ...(result.reason ? [result.reason] : [])])],
     };
   }
   return summarizeAttachment({ requested: [] });

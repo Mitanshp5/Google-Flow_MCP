@@ -146,8 +146,7 @@ export async function handleListMentionOptions(args = {}, deps = {}) {
       && noRefs(before) && noRefs(after) && typeof before.text === 'string' && before.text.trim()) {
       try {
         await promptInput.click().catch(() => {});
-        await promptInput.fill('').catch(() => {});
-        await promptInput.type(before.text.slice(0, 8000), { delay: 1 }).catch(() => {});
+        await promptInput.fill(before.text).catch(() => {});
         await page.waitForTimeout(400);
         const reread = await readComposerSnapshot(page, promptInput).catch(() => null);
         if (reread && isValidRestoreClaim({before, after: reread, claimedBy: 'restore-verified'})) {

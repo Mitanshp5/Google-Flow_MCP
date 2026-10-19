@@ -141,7 +141,6 @@ async function launchNewBrowser(cdpPort, options = {}) {
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-blink-features=AutomationControlled',
     `--window-size=1920,1080`,
   ];
 
@@ -263,7 +262,6 @@ export async function launchChromeDirect(options = {}) {
       `--user-data-dir=${tempDir}`,
       `--profile-directory=${get('chromeProfile', 'Default')}`,
       '--no-first-run', '--no-default-browser-check',
-      '--disable-blink-features=AutomationControlled',
       '--window-size=1920,1080',
     ];
     if (headless) args.push('--headless=new');

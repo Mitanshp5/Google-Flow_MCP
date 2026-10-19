@@ -8,7 +8,7 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { extractObservedAccount, verifyAccountState, classifyAppState } from '../browser/app-state.js';
 
 export async function handleFlowStatus(args = {}) {
-  const expectedAccount = get('expectedAccount', 'your-email@gmail.com');
+  const expectedAccount = get('expectedAccount', null);
   const status = {
     browser: isBrowserConnected(),
     account: null,

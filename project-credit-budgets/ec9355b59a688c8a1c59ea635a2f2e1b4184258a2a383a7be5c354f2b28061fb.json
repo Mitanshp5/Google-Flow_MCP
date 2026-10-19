@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "operationId": "confirm:1b022b7b",
+      "credits": 0,
+      "reservedAt": "2026-10-18T07:35:12.829Z"
+    },
+    {
+      "operationId": "op-633786fd12402ae7",
+      "credits": 0,
+      "reservedAt": "2026-10-18T07:36:14.699Z"
+    },
+    {
+      "operationId": "confirm:8296e3f8",
+      "credits": 4,
+      "reservedAt": "2026-10-18T07:37:30.172Z"
+    }
+  ]
+}

@@ -65,6 +65,40 @@ async function newProjectPage(html) {
 }
 
 describe('behavioral #1 nested dropdown enumeration via opened.panel', () => {
+  it('selects an exact model from the separate dropdown overlay', async () => {
+    const page = await newProjectPage(DISCOVERY_HTML);
+    try {
+      await page.evaluate(() => {
+        document.querySelectorAll('#model-overlay flow-menu-item').forEach(item => {
+          item.addEventListener('click', () => {
+            document.querySelector('#composer-settings button.mat-mdc-menu-trigger').textContent = `${item.textContent} arrow_drop_down`;
+            document.getElementById('model-overlay').style.display = 'none';
+          });
+        });
+      });
+      const { setPromptBarModel } = await import('../src/browser/safe-actions.js');
+      const result = await setPromptBarModel(page, 'Nano Banana 2.1');
+      expect(result.verified).toBe(true);
+      expect(await page.locator('#composer-settings button.mat-mdc-menu-trigger').textContent()).toBe('Nano Banana 2.1 arrow_drop_down');
+    } finally {
+      await page.__context.close();
+    }
+  }, 30000);
+
+  it('never accepts Lite as an exact match for Nano Banana 2', async () => {
+    const page = await newProjectPage(DISCOVERY_HTML);
+    try {
+      await page.locator('#composer-settings button.mat-mdc-menu-trigger').evaluate(el => { el.textContent = 'Nano Banana 2 Lite arrow_drop_down'; });
+      const { setPromptBarModel } = await import('../src/browser/safe-actions.js');
+      const result = await setPromptBarModel(page, 'Nano Banana 2');
+      expect(result.verified).toBe(false);
+      expect(result.ok).toBe(false);
+      expect(await page.locator('#composer-settings button.mat-mdc-menu-trigger').textContent()).toBe('Nano Banana 2 Lite arrow_drop_down');
+    } finally {
+      await page.__context.close();
+    }
+  }, 30000);
+
   it('enumerates Pro/Lite/2.1 from owning expanded dropdown, ignores changelog + disabled', async () => {
     const page = await newProjectPage(DISCOVERY_HTML);
     try {

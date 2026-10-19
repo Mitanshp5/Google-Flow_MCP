@@ -495,6 +495,35 @@ export async function ensureProjectInContext(page, context = {}) {
     return { url: page.url(), reused: true, projectId: _sessionProjectId };
   }
 
+  // Explicit scope always wins over remembered session state. In particular,
+  // campaign-scoped calls must not resume an unrelated session project.
+  if (!context.forceNew && (context.name || context.campaign)) {
+    const norm = s => String(s || '').toLowerCase();
+    const matches = loadProjects().projects.filter(p =>
+      (!context.name || norm(p.name) === norm(context.name))
+      && (!context.campaign || norm(p.campaign) === norm(context.campaign)));
+    const ids = new Set(matches.map(p => extractProjectId(p.url || '')).filter(Boolean));
+    if (ids.size > 1) {
+      throw new FlowError(ErrorCodes.INVALID_PARAMS, 'Project scope is ambiguous; pass an exact project_url.');
+    }
+    const target = matches.find(p => extractProjectId(p.url || ''));
+    if (target) {
+      if (!isSameProjectTarget(currentUrl, target.url) && !(await gotoProject(page, target.url, 'explicit-scope'))) {
+        throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, `Could not open requested project: ${target.url}. Refusing a different project.`);
+      }
+      _sessionProjectId = extractProjectId(target.url);
+      _sessionProjectName = target.name;
+      touchProject(_sessionProjectId);
+      return { url: page.url(), reused: true, id: target.id, name: target.name };
+    }
+    // An unknown explicit scope is a new project, not permission to rename
+    // or generate in whichever project happened to be active.
+    const result = await createNewProject(page, effectiveName, context.campaign);
+    _sessionProjectId = extractProjectId(result.url);
+    _sessionProjectName = result.name;
+    return result;
+  }
+
   // Already inside a project? Reuse it — BUT if the caller named a specific
   // project and we are in a DIFFERENT one, navigate to the named project
   // instead of renaming the current one (renaming here caused duplicate names).
@@ -726,6 +755,17 @@ function touchProject(urlProjectId) {
 export async function navigateToSidebar(page, section, opts = {}) {
   const detailed = await navigateSidebarDetailed(page, section, opts);
   return detailed.ok;
+}
+
+// Standalone editors share a project ID but do not contain its library
+// sidebar. Library tools must establish the root before selecting a tab.
+export async function ensureProjectLibrary(page) {
+  const url = new URL(page.url());
+  const match = url.pathname.match(/^\/project\/([^/]+)\/.+/);
+  if (url.origin !== 'https://flow.google.com' || !match) return;
+  await page.goto(`${url.origin}/project/${match[1]}`, {waitUntil:'domcontentloaded',timeout:30000});
+  await page.locator('mat-sidenav.project-sidenav, mat-nav-list[role="navigation"], nav, [class*="sidebar"]')
+    .first().waitFor({state:'visible',timeout:15000});
 }
 
 // Scoped sidebar roots only. There is deliberately NO document-wide generic

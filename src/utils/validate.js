@@ -50,7 +50,7 @@ export const schemas = {
     prompt: nonEmpty('prompt'),
     model: z.string().trim().max(100).optional(),
     auto_confirm: z.boolean().optional().default(false),
-    max_credits: z.number().finite().min(0).max(1000).optional().default(2),
+    max_credits: z.number().finite().min(0).max(1000).optional(),
     ratio: z.string().trim().max(16).optional(),
     reference_images: z.array(z.string().max(1024)).max(8).optional(),
     ingredients: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
@@ -88,7 +88,7 @@ export const schemas = {
     quantity: z.number().int().min(1).max(4).optional().describe('Variants for compare-pick-refine; test at low res, re-render winner.'),
     auto_confirm: z.boolean().optional().default(false),
     confirm_generate: z.boolean().optional().default(false).describe('LIVE PAID CLICK. When true: verifies model chip, clicks Generate (spends credits), polls for the video. Default false = prepare-only.'),
-    max_credits: z.number().finite().min(0).max(1000).optional().default(2),
+    max_credits: z.number().finite().min(0).max(1000).optional(),
     project_url: z.string().trim().max(2000).optional().describe('Direct Flow /project/ URL — wins over name/campaign matching.'),
   }).passthrough(),
 
@@ -102,6 +102,7 @@ export const schemas = {
     project_name: z.string().trim().max(200).optional(),
     campaign: z.string().trim().max(200).optional(),
     auto_confirm: z.boolean().optional().default(false),
+    max_credits: z.number().finite().min(0).max(1000).optional(),
   }).passthrough(),
 
   flow_import_character: z.object({
@@ -178,10 +179,19 @@ export const schemas = {
   flow_generate_confirm: z.object({
     job_id: z.string().trim().min(1).max(64).optional().describe('Prepared ready_for_confirmation job to live-click Generate for.'),
     jobId: z.string().trim().min(1).max(64).optional(),
-    max_credits: z.number().min(0).max(1000).optional().default(2).describe('Spend ceiling; quoted cost above this refuses (images ~0, Omni 1.1 Flash cheap default, Veo ~20).'),
+    max_credits: z.number().min(0).max(1000).optional().describe('Optional per-submission ceiling; project budget defaults to 50 total credits.'),
     wait_ms: z.number().int().min(1000).max(600000).optional().default(2000).describe('Post-click watch, default 2s, ceiling 30s. Characters return immediately for renaming. Verify remote output before downloading; never blindly resubmit.'),
   }).passthrough().refine((v) => (v.job_id && v.job_id.trim()) || (v.jobId && v.jobId.trim()),
     { message: 'job_id is required', path: ['job_id'] }),
+
+  flow_rename_image: z.object({
+    name: z.string().trim().min(1).max(200).optional(),
+    asset_id: z.string().trim().min(1).max(200).optional(),
+    new_name: z.string().trim().min(1).max(200),
+    project_name: z.string().trim().max(200).optional(),
+    campaign: z.string().trim().max(200).optional(),
+    project_url: z.string().trim().max(2000).optional(),
+  }).refine(v => v.name || v.asset_id, { message: 'name or asset_id is required' }),
 
   flow_rename_character: z.object({
     name: z.string().trim().min(1).max(200).optional().describe('Current character name as shown on its card.'),

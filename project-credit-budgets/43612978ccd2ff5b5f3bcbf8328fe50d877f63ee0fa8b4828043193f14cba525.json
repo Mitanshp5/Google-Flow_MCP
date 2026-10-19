@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "operationId": "ad-test-quotes-before-budget-feature",
+      "credits": 25,
+      "reservedAt": "2026-10-18T06:38:59.529Z"
+    },
+    {
+      "operationId": "confirm:af3cbc86",
+      "credits": 0,
+      "reservedAt": "2026-10-18T06:41:03.234Z"
+    }
+  ]
+}

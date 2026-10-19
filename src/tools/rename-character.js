@@ -3,6 +3,7 @@ import { getPage } from '../browser/connect.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { ensureProjectInContext, navigateToSidebar, extractProjectId } from '../navigation/project-navigator.js';
+import { renameCharacterTitle } from '../navigation/character-rename.js';
 
 // Rename a character inside its detail page (/character/{id}): open the
 // Characters section, open the card matching name/character_id, pencil the
@@ -16,6 +17,11 @@ export async function handleRenameCharacter(args = {}) {
 
   const page = getPage();
   await ensureProjectInContext(page, { name: args.project_name, campaign: args.campaign, project_url: args.project_url });
+  const onDetail = /\/character\/[^/]+$/.test(page.url());
+  const currentName = onDetail ? await page.locator('input[aria-label="Character name"]').inputValue().catch(() => null) : null;
+  if (/\/character\/[^/]+$/.test(page.url()) && currentName === want) {
+    return renameDetail(page, want, next);
+  }
   // The sidebar is absent on /character* routes — step back to the project
   // root first so section navigation has a sidebar to click.
   if (/\/character(\/|$)/.test(page.url())) {
@@ -27,7 +33,7 @@ export async function handleRenameCharacter(args = {}) {
   if (!navOk) throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'Characters section did not open');
   await page.waitForTimeout(3000);
 
-  const card = page.locator(`text=${want}`).first();
+  const card = page.getByText(want, { exact: true }).first();
   if (!(await card.isVisible().catch(() => false))) {
     await takeScreenshot(page, 'rename-character-not-found');
     throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, `Character "${want}" not found in Characters section`);
@@ -38,6 +44,26 @@ export async function handleRenameCharacter(args = {}) {
   if (!/\/character\//.test(detailUrl)) {
     await takeScreenshot(page, 'rename-character-no-detail');
     throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'Character card did not open a detail page');
+  }
+
+  return renameDetail(page, want, next);
+}
+
+async function renameDetail(page, want, next) {
+  const detailUrl = page.url();
+  const nativeInput = page.locator('input[aria-label="Character name"]');
+  if (await nativeInput.isVisible().catch(() => false)) {
+    if (!(await renameCharacterTitle(page, next))) {
+      throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'Character name input did not retain the requested name');
+    }
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await page.waitForURL(url => !/\/character\//.test(url.pathname), { timeout: 10000 });
+    // Verify both the server-acknowledged native title (helper above) and
+    // the returned library card. Do not immediately reopen a cached detail
+    // editor, which can overwrite the completed save with its stale draft.
+    await page.getByText(next, { exact: true }).first().waitFor({ state: 'visible', timeout: 10000 });
+    return { status: 'renamed', from: want, to: next, characterId: detailUrl,
+      screenshot: await takeScreenshot(page, 'character-renamed') };
   }
 
   const pencil = page.locator('[aria-label*="edit" i]').first();

@@ -28,25 +28,26 @@ export async function handleFlowOpen(args) {
       await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
       await page.waitForTimeout(waitFor);
 
-      const currentUrl = page.url();
-      const pageTitle = await page.title().catch(() => '');
-
+      let currentUrl, pageTitle, pageContent, html, appState;
+      const readinessDeadline = Date.now() + waitFor;
+      for (;;) {
+        currentUrl = page.url();
+        pageTitle = await page.title().catch(() => '');
+        pageContent = await page.textContent('body').catch(() => '') || '';
+        html = typeof page.content === 'function' ? await page.content().catch(() => '') : '';
+        appState = classifyAppState({url:currentUrl,title:pageTitle,bodyText:pageContent,html});
+        if (['ready','auth_needed','error_404'].includes(appState.app) || Date.now() >= readinessDeadline) break;
+        await page.waitForTimeout(Math.min(250, Math.max(1, readinessDeadline - Date.now())));
+      }
       await takeScreenshot(page, 'flow-opened').catch(() => {});
-
-      const pageContent = await page.textContent('body').catch(() => '') || '';
-      let html = '';
-      try {
-        if (typeof page.content === 'function') html = await page.content().catch(() => '');
-      } catch { html = ''; }
 
       // W02 F10: allowed origin, verified account and app usability are
       // three INDEPENDENT dimensions. isLoggedIn is true ONLY on positive
       // exact account verification — never from shell presence or absence
       // of a sign-in string. Error/loading pages report account unverified
       // (null), never flipping an independently verified account to false.
-      const appState = classifyAppState({ url: currentUrl, title: pageTitle, bodyText: pageContent, html });
       const allowedUrl = isFlowUrl(currentUrl);
-      const shellReady = shellReadyFromHtml(html);
+      const shellReady = shellReadyFromHtml(html) || ['flow-character-editor','flow-tools-gallery'].includes(appState.reason);
       const isAuth = appState.app === 'auth_needed' || currentUrl.includes('accounts.google.com');
       const isError = appState.app === 'error_404';
       const isLoading = appState.app === 'loading';

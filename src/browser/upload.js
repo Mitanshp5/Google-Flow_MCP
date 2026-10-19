@@ -201,10 +201,14 @@ export async function readUploadAck(page, expectedNames = []) {
 // Current Flow picker exposes the upload filename and a stable CDN media ID.
 // Preserve that mapping, then verify the SAME ID in the composer, not merely
 // a matching library thumbnail or input.files (Flow removes its input).
-export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [], slot = null } = {}) {
+export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [], slot = null, entryLocator = null } = {}) {
   const deadline = Date.now() + timeoutMs;
   let identities = [];
   do {
+    if (await page.getByText('Rights to use this image', { exact: true }).isVisible().catch(() => false)) {
+      return { verified: false, acknowledged: [], reason: 'rights_confirmation_required',
+        message: 'Flow requires you to confirm rights to this image. Acknowledge the visible dialog, then prepare again; no generation was submitted.' };
+    }
     identities = await page.evaluate(() => [...document.querySelectorAll('flow-add-menu-asset-item, flow-image-tile')].map(el => {
       const name = el.querySelector('.asset-title, .footer-title')?.textContent?.trim();
       const src = el.querySelector('img')?.src || '';
@@ -227,8 +231,13 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
       return match?.[1] === id;
     }), selected[i].assetId);
     if (alreadyAttached) continue;
-    const item = page.locator('flow-add-menu-asset-item').filter({ has: page.getByText(selected[i].name, { exact: true }) });
-    if (!await item.isVisible().catch(() => false) && !await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS)) {
+    // Filename alone is ambiguous after retrying an upload. Select the newly
+    // observed stable ID, not an older same-named asset in the picker.
+    const item = page.locator('flow-add-menu-asset-item').filter({ has: page.locator(`img[src*="/image/${selected[i].assetId}"]`) });
+    const reopen = async () => entryLocator
+      ? entryLocator.click({timeout:3000}).then(() => true).catch(() => false)
+      : clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
+    if (!await item.isVisible().catch(() => false) && !await reopen()) {
       return { verified: false, acknowledged: [], reason: 'Cannot reopen ingredient picker' };
     }
     if (await item.count() !== 1) return { verified: false, acknowledged: [], reason: 'Uploaded item is ambiguous or missing' };

@@ -3,9 +3,9 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
-import { detectPageElements, ensureManualMode } from '../browser/safe-actions.js';
+import { detectPageElements, ensureManualMode, attachReferenceFiles } from '../browser/safe-actions.js';
 import { saveMetadata } from '../utils/file-manager.js';
-import { ensureProjectInContext, navigateToSidebar, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
+import { ensureProjectInContext, ensureProjectLibrary, navigateToSidebar, extractProjectId, buildProjectUrl } from '../navigation/project-navigator.js';
 
 import { escapeRegExp, resolveSafePath } from '../utils/sanitize.js';
 import { isErrorHtml, extractObservedAccount } from '../browser/app-state.js';
@@ -14,8 +14,15 @@ import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js
 import { createOperationStore } from '../domain/operations.js';
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import fs from 'fs';
+import { decontaminateModelField } from '../browser/capabilities.js';
+import { handleGenerateConfirm } from './generate-confirm.js';
+import { fillCharacterDescription } from '../browser/character-form.js';
 
 export async function handleCreateCharacter(args) {
+  const autoConfirm = args.auto_confirm === true;
+  // Both live and prepare-only requests use the same verified preparation.
+  // The confirmation handler owns the credit policy and the single click.
+  args = { ...args, auto_confirm: false };
   const job = jobQueue.createJob('create_character', {
     ...args,
     project_name: args.project_name,
@@ -26,13 +33,14 @@ export async function handleCreateCharacter(args) {
     jobQueue.startJob(job.id);
     const page = getPage();
 
-    return await withUiTransaction(async ({ epoch }) => {
+    const prepared = await withUiTransaction(async ({ epoch }) => {
     assertUiCurrent(epoch);
 
     // Ensure we're inside a project
     await ensureProjectInContext(page, {
       name: args.project_name,
       campaign: args.campaign,
+      project_url: args.project_url,
     });
 
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
@@ -47,8 +55,9 @@ export async function handleCreateCharacter(args) {
     // project has no characters yet, this page IS the "New character"
     // creation form directly, with a "Describe your character..." input,
     // sample prompt cards, Upload and "Add from Project" buttons.)
+    await ensureProjectLibrary(page);
     const nav = await navigateToSidebar(page, 'Characters');
-    if (!nav.ok) {
+    if (!nav) {
       // F02 fallback: try direct singular /character route
       const projectId = extractProjectId(page.url());
       if (projectId) {
@@ -83,45 +92,32 @@ export async function handleCreateCharacter(args) {
     // Optional archetype starter (The Eccentric, The Professional,
     // The Wildcard, The Familiar, The Wicked, The Fantastical). Clicks the
     // exact card when visible, otherwise continues to the scratch composer.
-    if (typeof args.archetype === 'string' && args.archetype.trim()) {
-      const card = page.locator('button').filter({ hasText: args.archetype.trim() }).first();
-      if (await card.isVisible().catch(() => false)) {
-        await card.click().catch(() => {});
-        await page.waitForTimeout(2000);
-        logger.info('Archetype selected', { archetype: args.archetype.trim() });
-      } else {
-        logger.warn('Archetype card not visible, using scratch composer', { archetype: args.archetype.trim() });
-      }
-    }
 
     // F03: Require feature-specific character form evidence.
     // The ordinary prompt bar or generic contenteditable alone is NOT proof of a character form!
     // Live UI keeps "Describe your character..." as text while the editable
     // is an inner contenteditable — probe the real editables, not just placeholder attrs.
+    const formSelector = '[placeholder*="Describe your character" i], [data-placeholder*="Describe your character" i], [aria-label*="Describe your character" i]';
     const onCreateForm = await page.locator(
       '[placeholder*="Describe your character" i], ' +
       '[data-placeholder*="Describe your character" i], ' +
       '[aria-label*="Describe your character" i]'
-    ).first().isVisible().catch(() => false)
-      || await page.evaluate(() => {
-        const bar = [...document.querySelectorAll('div')].find(d =>
-          /describe your character/i.test(d.textContent || '') && d.querySelector('[contenteditable="true"], textarea, [role="textbox"]'));
-        return !!bar;
-      }).catch(() => false);
+    ).first().isVisible().catch(() => false);
 
     if (!onCreateForm) {
       // Look for a button to open the "New character" creation form
-      const newCharLocator = page.locator(
-        'button:has-text("New character"), ' +
-        'button:has-text("New Character"), ' +
-        'button[aria-label*="new character" i], ' +
-        'button[aria-label*="create character" i], ' +
-        'a:has-text("New character")'
-      ).first();
+      // Text-content matching also hits the sidebar's icon ligature
+      // "accessibility_newCharacters". Its accessible name is Characters,
+      // so use the actual New character action name instead.
+      const newCharLocator = page.getByRole('button', { name: /^(?:New|Create) character$/i })
+        .or(page.getByRole('link', { name: /^New character$/i })).first();
 
       if (await newCharLocator.isVisible().catch(() => false)) {
         await newCharLocator.click();
         await page.waitForTimeout(2000);
+        if (!(await page.locator(formSelector).first().isVisible().catch(() => false))) {
+          throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'New character did not open the native description form. No description entered.');
+        }
       } else {
         // F03: Neither character form nor New Character button found.
         // Return explicit blocker instead of typing description into ordinary video composer!
@@ -145,6 +141,10 @@ export async function handleCreateCharacter(args) {
     const refImages = Array.isArray(args.reference_images) && args.reference_images.length > 0
       ? args.reference_images
       : (args.reference_image ? [args.reference_image] : []);
+
+    if (autoConfirm && !(await page.locator('button[aria-label="Select model family"]').isVisible().catch(() => false))) {
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, 'Native character image model control is unverified. No fields changed and no Generate click made.');
+    }
 
     if (args.auto_confirm === true) {
       assertUiCurrent(epoch);
@@ -200,9 +200,7 @@ export async function handleCreateCharacter(args) {
     }
     if (descLocator) {
       await descLocator.click();
-      try { await descLocator.fill(''); } catch { /* ignore */ }
-      await page.waitForTimeout(200);
-      await descLocator.type(args.description, { delay: 20 });
+      await fillCharacterDescription(page, descLocator, args.description, args.archetype?.trim());
     } else {
       const out = {
         status: 'blocked',
@@ -217,6 +215,7 @@ export async function handleCreateCharacter(args) {
 
     // Upload reference image(s) if provided — supports reference_images (array)
     // or the legacy reference_image (single string)
+    let references = { requested: [], verified: true };
     if (refImages.length > 0) {
       const resolved = [];
       for (const p of refImages) {
@@ -232,16 +231,9 @@ export async function handleCreateCharacter(args) {
         }
       }
       if (resolved.length > 0) {
-        // File inputs are usually hidden — do NOT gate on isVisible().
-        const fileLocator = page.locator('input[type="file"]').first();
-        try {
-          await fileLocator.setInputFiles(resolved);
-          await page.waitForTimeout(2000);
-          logger.info('Reference image(s) uploaded', { count: resolved.length });
-        } catch (e) {
-          logger.warn('Reference image upload failed', { error: e.message });
-        }
+        references = await attachReferenceFiles(page, descLocator, resolved);
       }
+      if (resolved.length !== refImages.length) references = { ...references, verified: false };
     }
 
     // Try to select model (escaped exact match — no selector injection)
@@ -257,24 +249,43 @@ export async function handleCreateCharacter(args) {
     }
 
     await takeScreenshot(page, 'character-ready');
+    const modelControl = page.locator('button[aria-label="Select model family"]');
+    const observedModel = await modelControl.isVisible().catch(() => false)
+      ? decontaminateModelField(await modelControl.innerText()) : '';
+    const preparationVerified = references.verified && !!observedModel;
+    const unapplied = [
+      ...(!references.verified ? ['reference_images'] : []),
+      ...(!observedModel ? ['name', 'model'] : []),
+    ];
 
     if (args.auto_confirm === false) {
       saveMetadata(job.id, {
         type: 'character',
+        name: args.name,
+        model_used: observedModel,
         description: args.description,
+        prompt: args.description,
+        project_url: page.url(),
         model: args.model,
         referenceImages: refImages,
         projectName: args.project_name,
         campaign: args.campaign,
         jobId: job.id,
-        status: 'ready_for_confirmation',
+        status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       });
 
       jobQueue.completeJob(job.id, {
-        status: 'ready_for_confirmation',
+        status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
         type: 'character',
+        name: args.name,
+        model_used: observedModel,
         jobId: job.id,
         description: args.description,
+        prompt: args.description,
+        project_url: page.url(),
+        references,
+        unapplied,
+        naming: { requested: args.name, status: 'deferred_until_created' },
         message: 'Character setup complete. Manual confirmation needed to create.',
         screenshot: await takeScreenshot(page, 'character-ready'),
       });
@@ -406,6 +417,10 @@ export async function handleCreateCharacter(args) {
       remoteSubmitFn: args._remoteSubmitFn || null,
     });
     }); // end withUiTransaction
+    if (autoConfirm && prepared.status === 'ready_for_confirmation') {
+      return await handleGenerateConfirm({ job_id: prepared.jobId, max_credits: args.max_credits, wait_ms: 2000 });
+    }
+    return prepared;
   } catch (err) {
     try { await takeScreenshot(getPage(), 'create-character-error'); } catch { /* ok */ }
     jobQueue.failJob(job.id, err);

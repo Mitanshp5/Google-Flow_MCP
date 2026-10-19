@@ -86,6 +86,28 @@ export function classifyAppState({ url = '', title = '', bodyText = '', html = '
   if (isAuthHtml({ title, bodyText, url })) {
     return { allowedUrl, app: 'auth_needed', reason: 'auth-interstitial' };
   }
+  const visible = stripNonVisible(html);
+  // The native character detail surface is usable before its below-fold
+  // generation composer is mounted. Its owning form/preview/name controls
+  // identify this view; a missing library sidebar is intentional.
+  if (allowedUrl && /\/project\/[^/?#]+\/character\/[^/?#]+\/?$/.test(url)
+    && /<flow-character-edit-page\b/i.test(visible) && /<flow-character-form\b/i.test(visible)
+    && /<flow-character-preview-panel\b/i.test(visible) && /aria-label=["']Character name["']/i.test(visible)) {
+    return {allowedUrl,app:'ready',reason:'flow-character-editor'};
+  }
+  if (allowedUrl && /\/project\/[^/?#]+\/character(?:\/[^/?#]+)?\/?$/.test(url)
+    && /aria-label=["']Describe your character(?:…|\.{3})?["']/i.test(visible)
+    && (/aria-label=["']Select model family["']/i.test(visible)
+      || (/<flow-character-edit-page\b/i.test(visible) && /<flow-character-form\b/i.test(visible)
+        && /<flow-character-prompt-box\b/i.test(visible) && /aria-label=["']Character name["']/i.test(visible)))
+    && /aria-label=["']Start generation["']/i.test(visible)) {
+    return {allowedUrl,app:'ready',reason:'flow-character-editor'};
+  }
+  if (allowedUrl && /\/project\/[^/?#]+\/tools\/?$/.test(url)
+    && hasSidebarScope(visible) && /<flow-applet-hero-banner\b/i.test(visible)
+    && /class=["'][^"']*\bapplet-manager-content\b/i.test(visible)) {
+    return { allowedUrl, app: 'ready', reason: 'flow-tools-gallery' };
+  }
   if (shellReadyFromHtml(html)) {
     if (!allowedUrl) return { allowedUrl, app: 'unknown', reason: 'non-flow-origin' };
     return { allowedUrl, app: 'ready', reason: 'flow-shell' };
@@ -157,15 +179,15 @@ export function extractObservedAccount(html) {
   return candidates[0];
 }
 
-// Exact expected-vs-observed token comparison (full equality, not substring
+// Optional expected-vs-observed token comparison (full equality, not substring
 // inclusion, not absence-of-sign-in). No observed token => unverified.
 // A mismatch is a distinct terminal state, never inferred from 404/loading.
 export function verifyAccountState({ expected = null, observed = null } = {}) {
-  if (!observed) return { state: 'unverified', expected: expected || null, observed: null };
+  if (!observed || !ATOMIC_EMAIL_EXACT_RE.test(String(observed))) return { state: 'unverified', expected: expected || null, observed: null };
   if (expected && String(observed).toLowerCase() === String(expected).toLowerCase()) {
     return { state: 'verified', expected, observed };
   }
-  if (!expected) return { state: 'unverified', expected: null, observed };
+  if (!expected) return { state: 'verified', expected: null, observed };
   return { state: 'mismatch', expected, observed };
 }
 

@@ -175,7 +175,7 @@ export async function executeDurableSubmission({
   logger.info('Executing authorized submission callback', { operationId: op.id, executionMode });
   const result = await remoteSubmitFn({ operationId: op.id, epoch, bounded });
   return {
-    status: 'submitted',
+    status: result?.remoteStatus === 'submission_unknown' ? 'submission_unknown' : 'submitted',
     operationId: op.id,
     committed,
     bounded,
