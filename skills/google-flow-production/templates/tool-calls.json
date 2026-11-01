@@ -1,0 +1,75 @@
+[
+  {
+    "purpose": "Refresh observed model options before preparation; inspect provenance and selected-model capabilities",
+    "tool": "flow_list_models",
+    "arguments": { "refresh": true }
+  },
+  {
+    "purpose": "Open an existing approved project; replace the illustrative URL with the actual project URL",
+    "tool": "flow_open",
+    "arguments": { "url": "https://flow.google.com/project/approved-project" }
+  },
+  {
+    "purpose": "Prepare a reference still; model name must first be observed in the image UI",
+    "tool": "flow_generate_image",
+    "arguments": {
+      "prompt": "The approved product on a neutral kitchen counter, with its supplied shape, color, and label preserved. Soft window light from the left; no extra people, products, or text.",
+      "model": "Nano Banana Pro",
+      "ratio": "9:16",
+      "auto_confirm": false
+    }
+  },
+  {
+    "purpose": "Prepare an original character in the already verified project; no submission",
+    "tool": "flow_create_character",
+    "arguments": {
+      "name": "Campaign Presenter",
+      "description": "An original adult presenter with short dark hair, a plain blue shirt, and a calm expression. Consistent wardrobe and soft kitchen window light.",
+      "auto_confirm": false
+    }
+  },
+  {
+    "purpose": "Prepare an ingredient-based shot; replace names with exact discovered references and verify this model/mode/duration combination",
+    "tool": "flow_generate_video",
+    "arguments": {
+      "prompt": "The approved presenter stands at the kitchen counter holding the approved product upright. They turn it slightly to show its front, then settle into a clear, relaxed hero pose without covering the label.",
+      "model": "Veo 3.1 - Fast",
+      "ratio": "9:16",
+      "duration": "8s",
+      "quality": "720p",
+      "camera": "A gentle push-in, then hold",
+      "style": "Natural soft window light, neutral kitchen palette",
+      "ingredients": ["Campaign Presenter", "Approved Product"],
+      "quantity": 1,
+      "project_url": "https://flow.google.com/project/approved-project",
+      "auto_confirm": false,
+      "confirm_generate": false
+    }
+  },
+  {
+    "purpose": "Prepare a separate Frames-mode shot; replace path with a real reviewed local image and verify frame support",
+    "tool": "flow_generate_video",
+    "arguments": {
+      "prompt": "Continue the reviewed starting composition with the presenter and product unchanged. The presenter gently places the product on the counter and keeps its front visible in the final pose.",
+      "model": "Veo 3.1 - Fast",
+      "ratio": "9:16",
+      "duration": "4s",
+      "quality": "720p",
+      "camera": "Static medium view",
+      "style": "Preserve the starting image lighting and palette",
+      "start_frame": "./approved-assets/shot-02-start.png",
+      "quantity": 1,
+      "project_url": "https://flow.google.com/project/approved-project",
+      "auto_confirm": false,
+      "confirm_generate": false
+    }
+  },
+  {
+    "purpose": "Download an existing completed asset; replace the ID with an exact returned choice, never infer identity from grid order",
+    "tool": "flow_download_latest",
+    "arguments": {
+      "project_url": "https://flow.google.com/project/approved-project",
+      "asset_id": "exact-returned-asset-id"
+    }
+  }
+]

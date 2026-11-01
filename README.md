@@ -196,6 +196,20 @@ everything ends up in one place instead of a new project per request.
 
 ---
 
+## Google Flow production workflow
+
+For directed multi-shot videos, start with [Google Flow Production](skills/google-flow-production/SKILL.md). It includes brief and shot-plan templates, continuity checks, fifteen on-demand creative style cards, prepare-only tool examples, and final-delivery checks. The workflow uses the existing MCP tools; it does not add a renderer or change credit safeguards.
+
+In an agent client with this repository available, ask:
+
+> Read `skills/google-flow-production/SKILL.md` and use it to plan my video. Confirm the brief and shot plan first; do not spend credits until I authorize a budget.
+
+The complete skill folder is also included in the npm package. Clients that do not automatically discover repository skills must read its `SKILL.md` explicitly, or you can copy the complete `skills/google-flow-production/` folder into your client's supported skill directory. Keep its relative references, templates, and third-party notice together. Installing the MCP alone does not automatically activate the skill.
+
+Model settings must match both the advertised tool schema and the selected model's verified live UI. Frames and Ingredients remain separate video modes. Script tools provide local planning/candidate review, not autonomous remote rendering. The existing reel exporter is still limited to its three-clip, 21-second contract; arbitrary timelines need an explicitly planned local edit.
+
+---
+
 ## Available tools
 
 | Tool | Purpose |
