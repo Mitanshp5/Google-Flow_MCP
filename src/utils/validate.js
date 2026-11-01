@@ -153,6 +153,12 @@ export const schemas = {
     waitFor: z.number().optional(),
   }).passthrough(),
 
+  flow_download_latest: z.object({
+    asset_id: z.string().min(1).max(200).optional(),
+    assetId: z.string().min(1).max(200).optional(),
+    project_url: z.string().regex(/^https:\/\/flow\.google\.com\/project\/[A-Za-z0-9_-]+\/?$/, 'Expected an exact Flow project root URL').optional(),
+  }).passthrough(),
+
   flow_screenshot: z.object({
     name: z.string().trim().min(1).max(80).optional().default('manual'),
   }).passthrough(),

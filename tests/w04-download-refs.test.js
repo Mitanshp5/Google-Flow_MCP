@@ -117,6 +117,7 @@ describe('W04 behavioral download enumeration + menu + bytes', () => {
       });
       expect(res.status).toBe('ambiguous');
       expect(res.choices).toHaveLength(2);
+      expect(res.next_action).toMatch(/exact asset_id/);
     } finally {
       await page.close();
       await ctx.close();

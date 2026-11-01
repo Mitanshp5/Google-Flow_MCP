@@ -215,7 +215,7 @@ everything ends up in one place instead of a new project per request.
 | `flow_rename_character` | Rename a character in its detail page (never the project title) |
 | `flow_rename_image` | Rename an existing image by exact `name` or `asset_id`, with `new_name` and optional project scope |
 | `flow_list_models` | List video/image models, ratios, durations from Flow UI (live) or cache |
-| `flow_download_latest` | Download the most recently generated asset |
+| `flow_download_latest` | Download an existing asset in the open project; returns choices when newest cannot be verified |
 | `flow_create_character` | Create a new character (name + description + optional `archetype` starter + reference images) |
 | `flow_import_character` | Import a character from a saved JSON file |
 | `flow_open_characters` | Open the Characters page for a project |
@@ -271,6 +271,11 @@ This is why the server connects to your *existing* signed-in Chrome profile. Ens
 
 **The agent creates a new Flow project every time**
 The server tracks one project per session by ID and reuses it. If this happens, check the logs for `Session project no longer reachable` and start a fresh session.
+
+**Downloads return "No download button found on current page" or `project_required`**
+Pass `{"project_url":"https://flow.google.com/project/<your-project-id>"}` to `flow_download_latest` to open the existing project and download from it directly. The tool briefly waits for its media library to load. It never creates a project or generates new media. Alternatively, open the project with `flow_open` first, then call `flow_download_latest` without `project_url` to keep the current project and composer intact.
+
+If the result is `ambiguous`, choose the intended asset from the returned `assets`/`choices`, then call `flow_download_latest` with `{"asset_id":"<exact-id-from-choices>"}` (and the same `project_url` if needed). The tool does not guess newest from grid position. If it returns `no_visible_assets` inside the correct project, make the completed asset visible and retry. If that still fails, report your package version and a screenshot with private details hidden.
 
 ---
 

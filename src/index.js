@@ -234,9 +234,10 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_download_latest',
-    description: 'Download a verified latest asset, or an explicit asset_id. Ambiguous ordering returns choices instead of guessing. Saves and verifies media bytes. No generation or upscaling.',
+    description: 'Download an existing completed asset. Pass project_url to open its existing Flow project directly, or use the currently open project. Waits briefly for its library to load. Download a verified latest asset, or an explicit asset_id from returned choices when ordering is ambiguous. Saves and verifies media bytes. Never creates projects, generates or upscales.',
     inputSchema: { type: 'object', properties: {
         asset_id: { type: 'string', description: 'Exact ID from current download choices. May be a thumbnail: token bound to the visible library, not a remote media UUID. Refresh choices after reloading Flow; explicit selection never claims newest.' },
+        project_url: { type: 'string', description: 'Exact existing https://flow.google.com/project/<id> URL. Opens that project before discovery; never creates one. Omit to preserve the current project.' },
     } },
   },
   {
@@ -721,7 +722,8 @@ async function dispatchToolCall(name, args, epoch) {
     }
 
     case 'flow_download_latest': {
-      const result = await handleDownloadLatest(args);
+      const v = parseOrThrow(schemas.flow_download_latest, args, 'flow_download_latest');
+      const result = await handleDownloadLatest(v);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 

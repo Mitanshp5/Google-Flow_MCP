@@ -126,17 +126,20 @@ function tileLocator(page, assetId, thumbnailUrl = null) {
 // Target the verified tile: hover/select → More options → Download, with the
 // download event pre-registered BEFORE the Download click (same race as the
 // filechooser: awaiting after the click loses the event).
-async function exposeAndDownloadTile(page, asset) {
+async function exposeAndDownloadTile(page, asset, assertProject = () => {}) {
   const id = asset.assetId || asset.id;
   const tile = tileLocator(page, id, asset.thumbnailUrl);
+  assertProject();
   try {
     await tile.hover({ timeout: 3000 }).catch(() => {});
   } catch { /* hover best-effort */ }
   const more = tile.locator('button:has-text("More options"), [aria-label*="More" i], .more').first();
   if (await more.isVisible().catch(() => false)) {
+    assertProject();
     await more.click({ timeout: 3000 });
     await page.waitForTimeout(400);
   }
+  assertProject();
   // Scope the Download click to the tile/menu — never a page-wide first
   // download control belonging to another asset.
   let dlBtn = tile.locator('button:has-text("Download"), [aria-label*="download" i], .dl').first();
@@ -145,6 +148,7 @@ async function exposeAndDownloadTile(page, asset) {
     if (await menuDl.isVisible().catch(() => false)) dlBtn = menuDl;
   }
   if (await dlBtn.getAttribute('aria-haspopup').catch(() => null) === 'menu') {
+    assertProject();
     await dlBtn.hover();
     const original = page.locator('[role="menu"]:visible [role="menuitem"]').filter({ hasText: /Original size/i }).first();
     await original.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
@@ -156,6 +160,7 @@ async function exposeAndDownloadTile(page, asset) {
   if (!(await dlBtn.isVisible().catch(() => false))) {
     return { download: null, error: `Download affordance not exposed for asset "${id}" (hover→More→Download)` };
   }
+  assertProject();
   const downloadPromise = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
   await dlBtn.click().catch(() => {});
   const download = await downloadPromise;
@@ -168,29 +173,84 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
   const outDirFn = deps.getOutputDirFn || getOutputDir;
   logger.info('Attempting to download latest result');
   let transfer = null;
+  // A download may open an explicitly requested existing project, never
+  // guess one from the homepage or create a project as a side effect.
+  const projectUrl = args.project_url;
+  if (projectUrl !== undefined && (typeof projectUrl !== 'string'
+    || !/^https:\/\/flow\.google\.com\/project\/[A-Za-z0-9_-]+\/?$/.test(projectUrl))) {
+    throw new FlowError(ErrorCodes.INVALID_PARAMS, 'project_url must be an exact https://flow.google.com/project/<id> URL.');
+  }
+  const target = projectUrl?.replace(/\/$/, '');
+  const assertProject = () => {
+    if (!target) return;
+    const current = new URL(page.url());
+    if (current.origin + current.pathname.replace(/\/$/, '') !== target) {
+      throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'The requested project is no longer open.', { reason: 'project_unavailable' });
+    }
+  };
 
   try {
+    if (projectUrl) {
+      const current = new URL(page.url());
+      if (current.origin + current.pathname.replace(/\/$/, '') !== target) {
+        await page.goto(projectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      }
+      assertProject();
+    }
     // 1. Enumerate live DOM identities FIRST — mapping before any click.
-    const tiles = await enumerateAssetTiles(page);
+    let tiles = await enumerateAssetTiles(page);
+    // Flow hydrates its library after navigation. Retry discovery briefly
+    // without reloading the current project or touching its composer.
+    const discoveryDeadline = Date.now() + 3000;
+    while (tiles.length === 0 && /^https:\/\/flow\.google\.com\/project\/[A-Za-z0-9_-]+\/?(?:[?#]|$)/.test(page.url())) {
+      assertProject();
+      const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
+      if (await openDl.isVisible().catch(() => false) || Date.now() >= discoveryDeadline) break;
+      await page.waitForTimeout(Math.min(200, Math.max(1, discoveryDeadline - Date.now())));
+      tiles = await enumerateAssetTiles(page);
+    }
+    assertProject();
     const explicitId = args.assetId ?? args.asset_id ?? null;
 
     if (tiles.length === 0) {
+      // An explicit selection must never fall back to another open menu.
+      if (explicitId) {
+        return { status: 'not_found', reason: 'explicit_asset_not_found', choices: [],
+          message: `Explicit asset "${explicitId}" is not present in the visible library. No file downloaded.`,
+          next_action: 'Open the correct project and make the requested completed asset visible, then retry with its current asset_id.' };
+      }
       // Honest conditional path: the already-open-menu working state (QA
       // single-client retest) with no enumerable tiles. Download the visible
       // context WITHOUT claiming latest identity.
       const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
       if (!(await openDl.isVisible().catch(() => false))) {
         await shotFn(page, 'download-btn-not-found').catch(() => null);
-        return { status: 'not_found', message: 'No download button found on current page' };
+        let currentUrl = null;
+        let homePage = false;
+        try {
+          const url = new URL(page.url());
+          currentUrl = url.origin + url.pathname;
+          homePage = url.origin === 'https://flow.google.com' && ['/', '/about', '/about/'].includes(url.pathname);
+        } catch { /* URL unavailable; do not infer a project from missing evidence. */ }
+        return { status: 'not_found', reason: homePage ? 'project_required' : 'no_visible_assets', currentUrl,
+          message: homePage
+            ? 'Open an existing Google Flow project containing a completed image or video before downloading. The current page is not a project.'
+            : 'No completed image or video could be identified and no Download control is visible on this page.',
+          next_action: homePage
+            ? 'Retry flow_download_latest with project_url set to the existing project URL (https://flow.google.com/project/<id>), or open it with flow_open first. No new generation is needed.'
+            : 'Make an existing completed asset visible in its project library, wait for the library to load, then retry. If the asset remains unrecognized, share the package version and a screenshot with private details hidden.' };
       }
-      const dp = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
+      assertProject();
       transfer = await captureMediaDownload(page, outDirFn);
+      assertProject();
+      const dp = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
       await openDl.click().catch(() => {});
       const download = await dp;
       if (!download) {
         await shotFn(page, 'download-no-event').catch(() => null);
         return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: 'No file was downloaded. The render may still be running or the download control may open a menu. Verify the asset before retrying.' };
       }
+      assertProject();
       const saved = await saveMediaDownload(transfer ? transfer.wrap(download) : download, outDirFn, { page });
       return { status: 'downloaded', message: 'Verified media saved with format extensions (current selection; latest identity not verified).', ...saved, latest_verified: false, asset: null };
     }
@@ -219,21 +279,29 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
           choices: (mapped.choices || []).map((c) => c.assetId || c.id),
           assets: tiles.map(({ assetId, title, kind, identityKind }) => ({ assetId, title, kind, identityKind: identityKind || 'media-id' })),
           message: 'Download blocked: no unambiguous latest asset identity.',
+          next_action: 'Choose the intended asset from assets/choices and retry flow_download_latest with its exact asset_id. DOM order is not proof of newest; no new generation is needed.',
         };
       }
       chosen = mapped.asset;
     }
 
     // 3. Mapping validated BEFORE the click — now target its real menu.
+    assertProject();
     transfer = await captureMediaDownload(page, outDirFn);
-    const { download, error } = await exposeAndDownloadTile(page, chosen);
+    const { download, error } = await exposeAndDownloadTile(page, chosen, assertProject);
     if (!download) {
       await shotFn(page, 'download-no-event').catch(() => null);
       return { status: 'not_downloaded', reason: 'download_event_missing', retryable: true, message: error || 'Download menu did not produce a download event. No file saved.', asset: { assetId: chosen.assetId || chosen.id, title: chosen.title } };
     }
+    assertProject();
     const saved = await saveMediaDownload(transfer ? transfer.wrap(download) : download, outDirFn, { page });
     return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true, latest_verified: !explicitId, asset: { assetId: chosen.assetId || chosen.id, identityKind: chosen.identityKind || 'media-id', title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
+    if (err.details?.reason === 'project_unavailable') {
+      return { status: 'not_found', reason: 'project_unavailable',
+        message: 'The requested project did not stay open. No file saved.',
+        next_action: 'Check access to the existing project and complete any required sign-in in Chrome, then retry with the same project_url.' };
+    }
     // Signed-URL expiry / incomplete / failure — no fabricated identity.
     const classified = classifyDownloadError(err);
     throw new FlowError(ErrorCodes.DOWNLOAD_FAILED, `Download failed (${classified.code}): ${classified.message}`, { code: classified.code, retryable: classified.retryable });
