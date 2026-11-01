@@ -7,7 +7,7 @@ import { schemas } from '../src/utils/validate.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const skillRoot = path.join(root, 'skills', 'google-flow-production');
-const read = relative => fs.readFileSync(path.join(skillRoot, relative), 'utf8');
+const read = relative => fs.readFileSync(path.join(skillRoot, relative), 'utf8').replace(/\r\n/g, '\n');
 const styles = [
   '01-cinematic', '02-3d-cgi', '03-cartoon', '04-comic-to-video',
   '05-fight-scenes', '06-motion-design-ad', '07-ecommerce-ad',

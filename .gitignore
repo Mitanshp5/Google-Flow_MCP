@@ -31,7 +31,11 @@ AUDIT_LOG.untracked.md
 /.npm-cache/
 /*.tgz
 
-# Local manual-test inputs and chat handoff notes (keep plans/progress trackable)
+# Historical session notes and manual-test inputs (not product documentation)
+/flow-errors.md
+/implementation-progress.md
+/google-flow-mcp-story-production-plan.md
+/w08-repair-continuation-prompt.txt
 /char-test.json
 /continuation-prompt.txt
 /gate-a-continuation-prompt.txt
@@ -51,6 +55,7 @@ scripts/*/
 /operations/
 /consumed-children/
 /journal/
+/project-credit-budgets/
 
 # Local agent tooling install (skills/commands resolve from the live env)
 /.opencode/

@@ -329,6 +329,7 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 - `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
 - `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
 - `config/flow.config.json` is gitignored — do not commit it. Runtime caches (`flow.models.json`, `selectors.map.json`, `flow.projects.json`) are gitignored too.
+- Runtime records (`project-credit-budgets/`, `operations/`, `consumed-children/`, `journal/`, and generated `scripts/*/` state) stay local. Preserve them when cleaning the workspace: deleting them can lose recovery evidence or reset spending/duplicate-submission safeguards. QA captures and historical session notes are not product source; archive them outside the repository when no longer needed.
 
 ---
 
