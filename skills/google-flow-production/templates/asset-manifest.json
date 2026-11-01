@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Planning and evidence template, not a tool payload or completed production record",
+  "project": {
+    "url": null,
+    "observedAccount": null,
+    "briefApproved": false,
+    "spendingAuthorization": null,
+    "totalAuthorizedCredits": null,
+    "knownSpentCredits": null,
+    "reservedOrUnknownCredits": null
+  },
+  "references": [],
+  "shots": [],
+  "edit": {
+    "orderedInputs": [],
+    "outputPath": null,
+    "measuredDurationSec": null,
+    "width": null,
+    "height": null,
+    "videoCodec": null,
+    "audioCodec": null,
+    "hasAudio": null,
+    "metadataVerified": false,
+    "playbackReviewed": false,
+    "limitations": []
+  },
+  "recordingGuidance": {
+    "references": "Record path, source, rights, consent when relevant, intended role, observed project name/identity, and approval.",
+    "shots": "Record shot ID, requested/observed settings, exact reference set/roles, preparation job, authorization, quote, submission outcome, remote completion evidence, selected asset identity, verified original download path, working-copy path, and visual/audio review.",
+    "unknown": "Keep missing observations null; never manufacture IDs, success, zero spend, audio, or readiness."
+  }
+}
