@@ -72,6 +72,34 @@ export async function findAgentToggle(page) {
 }
 
 /**
+ * Flow (Nov 2026) opens the Agent chat as a right side panel — new projects
+ * start with it open — and while it is open the bottom bar (with its Agent
+ * chip) is hidden, so findAgentToggle sees nothing and the run drives the
+ * agent's own composer instead. Close it via the panel header's Close button
+ * (anchored on "Start new session", which only the agent header has).
+ * Returns true when a panel was closed; no-op on pages without one (or mocks).
+ */
+export async function closeAgentSidePanel(page) {
+  let closed = false;
+  try {
+    closed = await page.evaluate(() => {
+      let el = document.querySelector('button[aria-label="Start new session"]');
+      for (let i = 0; i < 4 && el; i++) {
+        el = el.parentElement;
+        const close = el && el.querySelector('button[aria-label="Close"]');
+        if (close) { close.click(); return true; }
+      }
+      return false;
+    });
+  } catch { /* no page.evaluate (mock) or mid-navigation: nothing to close */ }
+  if (closed) {
+    logger.info('Closed Agent side panel to expose the prompt bar');
+    await page.waitForTimeout(1000);
+  }
+  return closed;
+}
+
+/**
  * Ensure Agent mode is OFF. Flow's Agent chat hijacks the prompt box and
  * model UI — every MCP run turns it off first, then verifies.
  * Returns 'off'. Throws MANUAL_VERIFICATION_REQUIRED (as plain Error with
@@ -79,6 +107,7 @@ export async function findAgentToggle(page) {
  */
 export async function ensureManualMode(page, opts = {}) {
   const tries = opts.tries ?? 2;
+  await closeAgentSidePanel(page);
   for (let i = 0; i <= tries; i++) {
     const toggle = await findAgentToggle(page);
     if (!toggle) {

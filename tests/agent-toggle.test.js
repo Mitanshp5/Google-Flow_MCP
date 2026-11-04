@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findAgentToggle, pressSelectAll, ensureManualMode } from '../src/browser/safe-actions.js';
+import { findAgentToggle, pressSelectAll, ensureManualMode, closeAgentSidePanel } from '../src/browser/safe-actions.js';
 import { mockButton, mockPage } from './helpers/mock-page.js';
 
 // P2-1: agent-mode gating is safety-critical (Agent chat hijacks the prompt
@@ -54,5 +54,19 @@ describe('ensureManualMode', () => {
 
   it('missing toggle reports unknown-no-toggle', async () => {
     await expect(ensureManualMode(mockPage({ buttons: [] }))).resolves.toBe('unknown-no-toggle');
+  });
+});
+
+describe('closeAgentSidePanel', () => {
+  it('closes an open Agent side panel, then waits for the bar', async () => {
+    let waits = 0;
+    const page = { evaluate: async () => true, waitForTimeout: async () => { waits += 1; } };
+    await expect(closeAgentSidePanel(page)).resolves.toBe(true);
+    expect(waits).toBe(1);
+  });
+
+  it('is a no-op without a panel, or on pages without evaluate', async () => {
+    await expect(closeAgentSidePanel({ evaluate: async () => false, waitForTimeout: async () => {} })).resolves.toBe(false);
+    await expect(closeAgentSidePanel(mockPage({}))).resolves.toBe(false);
   });
 });
