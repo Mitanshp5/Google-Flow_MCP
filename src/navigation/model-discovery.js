@@ -1,6 +1,6 @@
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { saveCatalog, loadCatalog, getUniverse } from '../utils/models.js';
+import { saveCatalog, loadCatalog, getUniverse, FALLBACK_CATALOG } from '../utils/models.js';
 import { setPromptBarModel, setPromptBarMode, readToolState, findSettingsPanel } from '../browser/safe-actions.js';
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { decontaminateModelField } from '../browser/capabilities.js';
@@ -168,12 +168,19 @@ export async function discoverModels(page, opts = {}) {
       const m = String(url || '').match(/\/project\/([a-zA-Z0-9-]+)/);
       if (m) projectId = m[1];
     } catch { /* ignore */ }
+    // ponytail: never overwrite existing observed ratios/durations with empty arrays
+    const existingCatalog = loadCatalog();
+    const effectiveRatios = ratios.length > 0 ? ratios : (existingCatalog?.ratios?.length ? existingCatalog.ratios : FALLBACK_CATALOG.ratios);
+    const effectiveDurations = durations.length > 0 ? durations : (existingCatalog?.durations?.length ? existingCatalog.durations : FALLBACK_CATALOG.durations);
+
     const catalog = {
-      imageModels, videoModels, ratios, durations,
+      imageModels, videoModels,
+      ratios: effectiveRatios,
+      durations: effectiveDurations,
       discoveredAt: now,
       observedAt: now,
       source: 'live',
-      provenance: 'live',
+      provenance: ratios.length > 0 && durations.length > 0 ? 'live' : 'live+fallback',
       accountKey: opts.accountKey || null,
       projectId: opts.projectId || projectId,
       restored,

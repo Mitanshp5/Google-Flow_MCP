@@ -3,6 +3,8 @@ logs/
 screenshots-debug/
 outputs/
 chrome-profile-kiara/
+flow-chrome-profile/
+*chrome-profile*/
 screenshot*.png
 config/flow.config.json
 config/flow.projects.json
@@ -13,12 +15,20 @@ config/selectors.map.json
 *.log
 test-agent-generation.js
 temp-*.js
+temp-*.json
 scripts/test-character-generation.js
 scripts/inspect-character-rename.js
 scripts/test-mention-reference.mjs
+scripts/download-verified-video.js
+scripts/launch-flow-browser.js
+scripts/live-test-repaired-tools.js
+scripts/open-user-browser.ps1
+scripts/test-all-31-mcp-tools.js
+scripts/verify-all-findings.js
 ui_ss/
 dist/
 AUDIT_LOG.untracked.md
+MCP_TOOL_TEST_FINDINGS.txt
 
 # Local QA captures, worker copies and generated verification artifacts
 /qa-output/

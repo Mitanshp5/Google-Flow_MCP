@@ -23,11 +23,6 @@ describe('tool schemas', () => {
     const v = parseOrThrow(schemas.flow_create_character, { name: 'Bob', description: 'd' }, 't');
     expect(v.auto_confirm).toBe(false);
   });
-  it('create_scene accepts prompt alias and requires one', () => {
-    expect(() => parseOrThrow(schemas.flow_create_scene, {}, 't')).toThrow();
-    expect(parseOrThrow(schemas.flow_create_scene, { prompt: 'hello' }, 't').prompt).toBe('hello');
-    expect(parseOrThrow(schemas.flow_create_scene, { description: 'hello' }, 't').description).toBe('hello');
-  });
   it('use_tool requires tool_name', () => {
     expect(() => parseOrThrow(schemas.flow_use_tool, {}, 't')).toThrow(/tool_name/);
     expect(parseOrThrow(schemas.flow_use_tool, { tool_name: 'Grid Architect' }, 't').tool_name).toBe('Grid Architect');

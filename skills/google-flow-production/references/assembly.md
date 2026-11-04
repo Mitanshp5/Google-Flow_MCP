@@ -1,10 +1,8 @@
 # Assembly and Delivery
 
-## Existing MCP exporter boundary
+## Assembly is local-only
 
-`flow_export_reel` is a specialized exporter, not a general editor. Use it only when all of its current constraints are met: exactly three uniquely identified existing clips, observed Omni 1.1 Flash/360p settings, vertical framing, at least seven seconds per clip, and an audio track in each. It trims each clip to seven seconds and concatenates a 21-second 360-by-640 reel. It expects a supplied local FFmpeg executable with `ffprobe.exe` beside it, so this implementation is Windows-specific. Keep `prepare_only:true` until local export is requested. Its fixed output naming is not a generic campaign naming contract.
-
-For any other timeline, use an explicitly planned local edit or return the reviewed source clips with an honest assembly limitation. This skill does not add an arbitrary-length exporter or automatically run FFmpeg.
+There is no MCP editor or exporter tool. Assembly of reviewed clips is a local, separately authorized operation. Use a local edit only when it is explicitly approved; otherwise return the verified source clips with an honest assembly limitation. This skill does not add an arbitrary-length exporter or automatically run FFmpeg.
 
 ## Plan a local edit
 

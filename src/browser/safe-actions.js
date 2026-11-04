@@ -230,16 +230,40 @@ export async function findSettingsPanel(page) {
   return null;
 }
 
+// ponytail: dismiss lingering overlay backdrops that intercept clicks
+export async function dismissStaleOverlays(page) {
+  try {
+    const backdrop = page.locator('.cdk-overlay-backdrop, .cdk-overlay-backdrop-showing').first();
+    if (await backdrop.isVisible({ timeout: 500 }).catch(() => false)) {
+      logger.info('Stale overlay backdrop detected — pressing Escape to dismiss');
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(300);
+        if (!(await backdrop.isVisible({ timeout: 300 }).catch(() => false))) break;
+      }
+    }
+  } catch { /* best effort */ }
+}
+
 export async function closeSettingsPanel(page) {
   for (let i = 0; i < 4; i++) {
-    if (!(await findSettingsPanel(page))) return true;
+    const hasPanel = await findSettingsPanel(page);
+    const hasOverlay = await page.locator('.cdk-overlay-backdrop, .cdk-overlay-pane:visible').first().isVisible({ timeout: 200 }).catch(() => false);
+    if (!hasPanel && !hasOverlay) return true;
     await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(400);
+    if (hasOverlay) {
+      const backdrop = page.locator('.cdk-overlay-backdrop').first();
+      if (await backdrop.isVisible({ timeout: 200 }).catch(() => false)) {
+        await backdrop.click({ force: true, timeout: 1000 }).catch(() => {});
+      }
+    }
   }
   return !(await findSettingsPanel(page));
 }
 
 export async function openBarSettings(page) {
+  await dismissStaleOverlays(page);
   // Reuse an already-open panel (chip toggles — never blind-click).
   let panel = await findSettingsPanel(page);
   if (panel) return { panel };
@@ -483,6 +507,7 @@ export async function setPromptBarModel(page, model) {
   if (!want) return { ok: false, verified: false, kind: 'model', detail: 'empty model name' };
   const fail = (detail) => ({ ok: false, verified: false, kind: 'model', detail });
   try {
+    await dismissStaleOverlays(page);
     const opened = await openBarSettings(page);
     if (opened.error || !opened.panel) return fail(opened.error || 'settings panel did not open');
     const panel = opened.panel;
@@ -1052,6 +1077,10 @@ export async function configureGenerationUI(options = {}) {
 
   logger.info('Configuring generation UI (Fast-then-Quality, fail-closed on miss when strict)', { mode, ratio, model, quantity, duration, strict });
 
+  // Guard: dismiss any stale overlays/backdrops before manipulating UI,
+  // so they cannot intercept clicks on mode tabs, settings triggers, or model dropdowns.
+  await dismissStaleOverlays(page).catch(() => {});
+
   // ─── STEP 1: Switch mode (Image vs Video) via registry tab IDs ───────────
   if (mode) {
     const isImage = mode === 'Image';
@@ -1145,11 +1174,22 @@ export async function configureGenerationUI(options = {}) {
     for (const sel of modelChipSelectors) {
       const btn = page.locator(sel).first();
       if (await btn.isVisible().catch(() => false)) {
-        await btn.click();
-        await page.waitForTimeout(800);
-        panelOpened = true;
-        logger.info('Opened settings panel via model chip', { sel });
-        break;
+        const expanded = await btn.getAttribute('aria-expanded').catch(() => 'false') === 'true';
+        if (expanded) {
+          panelOpened = true;
+          logger.info('Opened settings panel via model chip (already expanded)', { sel });
+          break;
+        }
+        await dismissStaleOverlays(page);
+        try {
+          await btn.click({ timeout: 4000 });
+          await page.waitForTimeout(800);
+          panelOpened = true;
+          logger.info('Opened settings panel via model chip', { sel });
+          break;
+        } catch {
+          await dismissStaleOverlays(page);
+        }
       }
     }
   }
@@ -1257,6 +1297,7 @@ export async function configureGenerationUI(options = {}) {
 
         if (!same) {
           logger.info(`Changing model from "${currentModelName}" to "${model}"`);
+          await dismissStaleOverlays(page).catch(() => {});
           await dropdownBtn.click();
           await page.waitForTimeout(1000);
 

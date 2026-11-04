@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   TOOL_DEFINITIONS, handleToolCall, startServer,
@@ -58,15 +58,13 @@ describe('w00 import lifecycle uses actual exports', () => {
     expect(Array.isArray(TOOL_DEFINITIONS)).toBe(true);
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual([
       'flow_account_check', 'flow_connect', 'flow_create_character',
-      'flow_create_project', 'flow_create_scene', 'flow_discover_ui', 'flow_disconnect',
+      'flow_create_project', 'flow_discover_ui', 'flow_disconnect',
       'flow_download_latest', 'flow_generate_confirm', 'flow_generate_image', 'flow_generate_video',
       'flow_import_character', 'flow_list_browser_targets', 'flow_list_mention_options', 'flow_list_models',
-      'flow_export_reel',
       'flow_list_projects', 'flow_open', 'flow_open_characters', 'flow_open_tools_gallery',
       'flow_queue_reset', 'flow_queue_status', 'flow_rename_character', 'flow_rename_image', 'flow_screenshot',
       'flow_script_create', 'flow_script_review', 'flow_script_status',
-      'flow_script_run', 'flow_script_resume',
-      'flow_script_update', 'flow_status', 'flow_use_grid_architect',
+      'flow_script_run', 'flow_script_resume', 'flow_script_update', 'flow_status',
       'flow_use_tool',
     ].sort());
     expect(typeof handleToolCall).toBe('function');
@@ -94,8 +92,6 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     ['flow_import_character', {}],
     ['flow_open_characters', { project_name: 123 }],
     ['flow_list_mention_options', { campaign: {} }],
-    ['flow_create_scene', {}],
-    ['flow_use_grid_architect', {}],
     ['flow_use_tool', {}],
     ['flow_screenshot', { name: '' }],
     ['flow_queue_status', { history_limit: 0 }],
@@ -116,9 +112,7 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     ['flow_import_character', { file_path: 'x.json' }],
     ['flow_open_characters', {}],
     ['flow_list_mention_options', {}],
-    ['flow_create_scene', { prompt: 'x' }],
     ['flow_open_tools_gallery', {}],
-    ['flow_use_grid_architect', { theme_prompt: 'x' }],
     ['flow_use_tool', { tool_name: 'Grid Architect' }],
     ['flow_screenshot', { name: 'w00' }],
     ['flow_create_project', { name: 'w00 probe' }],
@@ -165,6 +159,24 @@ describe('w00 real dispatch while disconnected (no live browser)', () => {
     }
     throw new Error('expected MethodNotFound');
   });
+
+  it.each(['flow_create_scene', 'flow_use_grid_architect', 'flow_export_reel'])(
+    '%s is retired and rejects without browser or queue side effects', async (name) => {
+      expect(TOOL_DEFINITIONS.map((tool) => tool.name)).not.toContain(name);
+      expect(isBrowserConnected()).toBe(false);
+      const queueBefore = jobQueue.getStatus(100);
+      const resetCountBefore = jobQueue.resetCount;
+
+      await expect(handleToolCall(name, {})).rejects.toMatchObject({
+        code: ErrorCode.MethodNotFound,
+      });
+      await expect(handleToolCall(name, {})).rejects.toBeInstanceOf(McpError);
+
+      expect(isBrowserConnected()).toBe(false);
+      expect(jobQueue.getStatus(100)).toEqual(queueBefore);
+      expect(jobQueue.resetCount).toBe(resetCountBefore);
+    },
+  );
 });
 
 describe('w00 scoped fixture dispatch on real headless Chrome', () => {
@@ -281,8 +293,6 @@ const SCHEMA_FOR_TOOL = {
   flow_list_projects: 'flow_list_projects',
   flow_open_characters: 'project_scoped',
   flow_list_mention_options: 'project_scoped',
-  flow_create_scene: 'flow_create_scene',
-  flow_use_grid_architect: 'flow_use_grid_architect',
   flow_use_tool: 'flow_use_tool',
   flow_screenshot: 'flow_screenshot',
   flow_queue_status: 'flow_queue_status',
@@ -295,7 +305,7 @@ const SCHEMA_FOR_TOOL = {
 };
 const NO_SCHEMA_TOOLS = [
   'flow_disconnect', 'flow_status', 'flow_account_check', 'flow_list_models',
-  'flow_download_latest', 'flow_open_tools_gallery', 'flow_queue_reset', 'flow_export_reel',
+  'flow_download_latest', 'flow_open_tools_gallery', 'flow_queue_reset',
 ];
 
 // Outstanding advertised-vs-validated gaps, owned by W06. Both directions
@@ -313,8 +323,7 @@ const W06_MISMATCHES = [
   'flow_generate_confirm: advertised-required \'job_id\' is zod-optional',
   'flow_generate_confirm: zod field \'jobId\' not advertised',
   'flow_rename_character: zod field \'character_id\' not advertised',
-  'flow_create_scene: advertised-required \'prompt\' is zod-optional',
-  'flow_create_scene: zod field \'description\' not advertised',
+
   'flow_discover_ui: zod field \'waitFor\' not advertised',
   'flow_generate_image: zod field \'quantity\' not advertised',
   'flow_list_mention_options: zod field \'project_url\' not advertised',

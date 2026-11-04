@@ -25,9 +25,7 @@ import { handleDownloadLatest } from './tools/download-latest.js';
 import { handleCreateCharacter } from './tools/create-character.js';
 import { handleImportCharacter } from './tools/import-character.js';
 import { handleOpenCharacters } from './tools/open-characters.js';
-import { handleCreateScene } from './tools/create-scene.js';
 import { handleOpenToolsGallery } from './tools/open-tools-gallery.js';
-import { handleUseGridArchitect } from './tools/grid-architect.js';
 import { handleDiscoverUi } from './tools/discover-ui.js';
 import { handleListMentionOptions } from './tools/list-mentions.js';
 import { handleUseFlowTool } from './tools/use-flow-tool.js';
@@ -41,10 +39,10 @@ import { jobQueue } from './queue/job-queue.js';
 import { takeScreenshot } from './utils/screenshots.js';
 import { FlowError } from './utils/errors.js';
 import { schemas, parseOrThrow } from './utils/validate.js';
-import { getUniverse, loadCatalog } from './utils/models.js';
+import { getUniverse, loadCatalog, FALLBACK_CATALOG } from './utils/models.js';
 import { runRetentionSweep } from './utils/file-manager.js';
 import { discoverModels, discoverCapabilities } from './navigation/model-discovery.js';
-import { handleExportReel } from './tools/export-reel.js';
+
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { withUiTransaction, assertUiCurrent } from './browser/ui-transaction.js';
@@ -240,16 +238,7 @@ const TOOL_DEFINITIONS = [
         project_url: { type: 'string', description: 'Exact existing https://flow.google.com/project/<id> URL. Opens that project before discovery; never creates one. Omit to preserve the current project.' },
     } },
   },
-  {
-    name: 'flow_export_reel',
-    description: 'Export three existing project clips in prompt order, trim each to 7s, concatenate to 21s using local FFmpeg. No generation or credits. Prepare-only by default. Downloads and verifies MP4s from Flow ZIPs; requires audio tracks.',
-    inputSchema: { type: 'object', properties: {
-      project_url: { type: 'string', description: 'Exact current Flow project root URL.' },
-      prompts: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 3, description: 'Unique video prompt prefixes in story order.' },
-      ffmpeg_path: { type: 'string', description: 'Existing local ffmpeg executable with ffprobe alongside.' },
-      prepare_only: { type: 'boolean', default: true },
-    }, required: ['project_url', 'prompts'] },
-  },
+
   {
     name: 'flow_create_character',
     description: 'Create a new character in Google Flow Characters with name and description. By default (auto_confirm=false): fills the description and returns "ready_for_confirmation" without submitting (no credits). When auto_confirm=true: fills and clicks submit, then renames "Untitled Character" to the given name.',
@@ -303,46 +292,13 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
-  {
-    name: 'flow_create_scene',
-    description: 'Create a new scene in Google Flow Scenes with characters and prompt. By default (auto_confirm=false) prepares only; set auto_confirm=true to actually create.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        prompt: { type: 'string', description: 'Scene description/prompt.' },
-        characters: { type: 'array', items: { type: 'string' }, description: 'Character names to include in the scene.' },
-        reference_image: { type: 'string', description: 'Path to a reference image (optional).' },
-        auto_confirm: { type: 'boolean', description: 'If false (default): prepare only. If true: click New Scene and create.', default: false },
-        project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
-        campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
-      },
-      required: ['prompt'],
-    },
-  },
+
   {
     name: 'flow_open_tools_gallery',
     description: 'Open the Google Flow Tools Gallery and list available tools.',
     inputSchema: { type: 'object', properties: {} },
   },
-  {
-    name: 'flow_use_grid_architect',
-    description: 'Open Grid Architect in Google Flow, fill theme prompt, shot prompts, engine, ratio, and visual logic settings. Supports batch shot generation for brand campaigns. Prepare-only by default (auto_confirm=false).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        theme_prompt: { type: 'string', description: 'Overall theme prompt for the grid.' },
-        shot_prompts: { type: 'array', items: { type: 'string' }, description: 'Array of individual shot prompts for the grid.' },
-        engine: { type: 'string', description: 'Engine/model for the grid.', default: 'Nano Banana 2' },
-        ratio: { type: 'string', description: 'Aspect ratio for all shots.', default: '16:9' },
-        visual_logic: { type: 'string', description: 'Visual logic type: None, Colour Pop, Side by Side, etc.' },
-        references: { type: 'array', items: { type: 'string' }, description: 'Paths to reference images.' },
-        auto_confirm: { type: 'boolean', description: 'Reserved — currently prepare-only.', default: false },
-        project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
-        campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
-      },
-      required: ['theme_prompt'],
-    },
-  },
+
   {
     name: 'flow_use_tool',
     description: 'Open any tool by name in Google Flow and optionally fill its configuration parameters. Prepare-only by default (auto_confirm=false).',
@@ -513,12 +469,12 @@ async function handleNativeToolCall(name, args) {
     'flow_connect', 'flow_disconnect', 'flow_discover_ui', 'flow_account_check',
     'flow_list_models', 'flow_download_latest', 'flow_import_character',
     'flow_open_characters', 'flow_list_mention_options', 'flow_open_tools_gallery',
-    'flow_use_grid_architect', 'flow_use_tool',
+    'flow_use_tool',
     'flow_open', 'flow_generate_image', 'flow_generate_video',
-    'flow_create_character', 'flow_create_scene',
+    'flow_create_character',
     'flow_create_project', 'flow_generate_confirm', 'flow_rename_character', 'flow_rename_image',
   ]);
-  const generation = ['flow_generate_image', 'flow_generate_video', 'flow_create_character', 'flow_create_scene', 'flow_use_grid_architect'].includes(name);
+  const generation = ['flow_generate_image', 'flow_generate_video', 'flow_create_character'].includes(name);
   if (generation && pendingGeneration.size) {
     throw new FlowError('JOB_IN_PROGRESS', 'A generation preparation already owns or is waiting for UI access.');
   }
@@ -713,7 +669,9 @@ async function dispatchToolCall(name, args, epoch) {
       if (cached) {
         const at = Date.parse(cached.savedAt || cached.discoveredAt || '') || 0;
         const ageMs = at ? Date.now() - at : null;
-        return { content: [{ type: 'text', text: JSON.stringify({ ...cached, source: 'cache',
+        const ratios = Array.isArray(cached.ratios) && cached.ratios.length > 0 ? cached.ratios : FALLBACK_CATALOG.ratios;
+        const durations = Array.isArray(cached.durations) && cached.durations.length > 0 ? cached.durations : FALLBACK_CATALOG.durations;
+        return { content: [{ type: 'text', text: JSON.stringify({ ...cached, ratios, durations, source: 'cache',
           stale: ageMs === null || ageMs > 6 * 3600 * 1000, cacheAgeMs: ageMs,
           note: 'Cache may predate the live UI (models/ratios change). For a live refresh, navigate into a project first, then call with refresh:true.',
         }, null, 2) }] };
@@ -727,10 +685,6 @@ async function dispatchToolCall(name, args, epoch) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
-    case 'flow_export_reel': {
-      const result = await handleExportReel(args);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    }
 
     case 'flow_create_character': {
       const v = parseOrThrow(schemas.flow_create_character, args, 'flow_create_character');
@@ -756,22 +710,12 @@ async function dispatchToolCall(name, args, epoch) {
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
-    case 'flow_create_scene': {
-      const v = parseOrThrow(schemas.flow_create_scene, args, 'flow_create_scene');
-      const result = await handleCreateScene(v);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    }
 
     case 'flow_open_tools_gallery': {
       const result = await handleOpenToolsGallery(args);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
 
-    case 'flow_use_grid_architect': {
-      const v = parseOrThrow(schemas.flow_use_grid_architect, args, 'flow_use_grid_architect');
-      const result = await handleUseGridArchitect(v);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    }
 
     case 'flow_use_tool': {
       const v = parseOrThrow(schemas.flow_use_tool, args, 'flow_use_tool');

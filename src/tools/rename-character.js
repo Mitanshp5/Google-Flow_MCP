@@ -30,7 +30,9 @@ export async function handleRenameCharacter(args = {}) {
     await page.waitForTimeout(2500);
   }
   const navOk = await navigateToSidebar(page, 'Characters').catch(() => false);
-  if (!navOk) throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'Characters section did not open');
+  const curUrl = page.url() || '';
+  const isCharUrl = /\/project\/[^/]+\/characters?(?:[?#]|$)/i.test(curUrl);
+  if (!navOk && !isCharUrl) throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'Characters section did not open');
   await page.waitForTimeout(3000);
 
   const card = page.getByText(want, { exact: true }).first();

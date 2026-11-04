@@ -111,31 +111,6 @@ export const schemas = {
     campaign: z.string().trim().max(200).optional(),
   }).passthrough(),
 
-  flow_create_scene: z.object({
-    prompt: nonEmpty('prompt').optional(),
-    description: z.string().trim().min(1).max(8000).optional(),
-    characters: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
-    reference_image: z.string().max(1024).optional(),
-    project_name: z.string().trim().max(200).optional(),
-    campaign: z.string().trim().max(200).optional(),
-    auto_confirm: z.boolean().optional().default(false),
-  }).passthrough().refine(
-    (v) => (v.prompt && v.prompt.trim()) || (v.description && v.description.trim()),
-    { message: 'prompt (or description) is required', path: ['prompt'] }
-  ),
-
-  flow_use_grid_architect: z.object({
-    theme_prompt: nonEmpty('theme_prompt'),
-    shot_prompts: z.array(z.string().trim().min(1).max(2000)).max(32).optional(),
-    engine: z.string().trim().max(100).optional(),
-    ratio: z.string().trim().max(16).optional(),
-    visual_logic: z.string().trim().max(100).optional(),
-    references: z.array(z.string().max(1024)).max(8).optional(),
-    project_name: z.string().trim().max(200).optional(),
-    campaign: z.string().trim().max(200).optional(),
-    auto_confirm: z.boolean().optional().default(false),
-  }).passthrough(),
-
   flow_use_tool: z.object({
     tool_name: z.string().trim().min(1).max(100).optional(),
     name: z.string().trim().min(1).max(100).optional(),

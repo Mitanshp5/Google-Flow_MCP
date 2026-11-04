@@ -3,7 +3,7 @@
 An MCP (Model Context Protocol) server that lets an AI agent drive
 [Google Flow](https://flow.google.com/) (`flow.google.com`)
 through your own logged-in Chrome profile — generating images, videos,
-characters, and scenes — without ever sharing your Google credentials with
+characters, and project scenes — without ever sharing your Google credentials with
 the agent.
 
 This server supports **Windows**, **macOS**, and **Linux** out of the box using unified npm commands that automatically dispatch platform-specific execution.
@@ -188,7 +188,7 @@ npm run build       # bundles src/ -> dist/ (required before register)
    - `flow_rename_image` — rename one image by exact title or media ID (never the project title)
    - `flow_list_mention_options` — see what images/characters are available
      to reference by name
-   - `flow_create_scene` — create a new scene, optionally referencing characters
+
 
 The MCP server automatically creates a Google Flow **project** on first use
 and reuses it for the rest of the session (tracked by project ID), so
@@ -206,7 +206,7 @@ In an agent client with this repository available, ask:
 
 The complete skill folder is also included in the npm package. Clients that do not automatically discover repository skills must read its `SKILL.md` explicitly, or you can copy the complete `skills/google-flow-production/` folder into your client's supported skill directory. Keep its relative references, templates, and third-party notice together. Installing the MCP alone does not automatically activate the skill.
 
-Model settings must match both the advertised tool schema and the selected model's verified live UI. Frames and Ingredients remain separate video modes. Script tools provide local planning/candidate review, not autonomous remote rendering. The existing reel exporter is still limited to its three-clip, 21-second contract; arbitrary timelines need an explicitly planned local edit.
+Model settings must match both the advertised tool schema and the selected model's verified live UI. Frames and Ingredients remain separate video modes. Script tools provide local planning/candidate review, not autonomous remote rendering. There is no MCP timeline editor or exporter; arbitrary local assembly requires an explicitly planned, separately authorized edit.
 
 ---
 
@@ -234,9 +234,7 @@ Model settings must match both the advertised tool schema and the selected model
 | `flow_import_character` | Import a character from a saved JSON file |
 | `flow_open_characters` | Open the Characters page for a project |
 | `flow_list_mention_options` | List images/characters available for `@name` references |
-| `flow_create_scene` | Create a new scene, optionally referencing characters |
 | `flow_open_tools_gallery` | Open Flow's Tools gallery |
-| `flow_use_grid_architect` | Open the Grid Architect tool |
 | `flow_use_tool` | Use an arbitrary tool from the Tools gallery |
 | `flow_screenshot` | Take a debug screenshot of the current page |
 | `flow_queue_status` | Check the status of queued generation jobs |

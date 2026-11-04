@@ -136,6 +136,15 @@ export async function handleGenerateVideo(args) {
       project_url: args.project_url,
     });
 
+    // Ensure we are on the main project composer page (not a subroute like /character or /tools)
+    const curUrl = page.url() || '';
+    if (/\/project\/[^/]+\/(?:character|tools|trash)/i.test(curUrl)) {
+      const rootUrl = curUrl.replace(/\/(?:character|tools|trash).*/i, '');
+      logger.info('Navigating from subroute back to project composer', { from: curUrl, to: rootUrl });
+      await page.goto(rootUrl, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2000);
+    }
+
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
     try {
       await ensureManualMode(page);

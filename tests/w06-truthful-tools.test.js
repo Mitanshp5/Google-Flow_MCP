@@ -6,9 +6,7 @@ import { handleDiscoverUi } from '../src/tools/discover-ui.js';
 import { handleOpenCharacters } from '../src/tools/open-characters.js';
 import { handleImportCharacter } from '../src/tools/import-character.js';
 import { handleCreateCharacter } from '../src/tools/create-character.js';
-import { handleCreateScene } from '../src/tools/create-scene.js';
 import { handleOpenToolsGallery } from '../src/tools/open-tools-gallery.js';
-import { handleUseGridArchitect } from '../src/tools/grid-architect.js';
 import { handleUseFlowTool } from '../src/tools/use-flow-tool.js';
 import { handleGenerateVideo } from '../src/tools/generate-video.js';
 import { handleGenerateImage } from '../src/tools/generate-image.js';
@@ -208,28 +206,7 @@ describe('W06 Truthful Feature Handlers — Characters and 404 Handling', () => 
   });
 });
 
-describe('W06 Truthful Feature Handlers — Scenes and Tools Gallery', () => {
-  it('flow_create_scene blocks when scene builder form is absent, never reporting ready from ordinary composer', async () => {
-    const page = await makePage(`
-      <html>
-        <body>
-          <nav class="sidebar"><mat-list-item>All media</mat-list-item></nav>
-          <div contenteditable="true">Regular composer</div>
-        </body>
-      </html>
-    `, PROJECT_URL);
-    try {
-      const res = await withPage(page, async () => handleCreateScene({
-        prompt: 'Dramatic sunset on a cliff',
-        project_url: PROJECT_URL,
-      }));
-      expect(res.status).toBe('blocked');
-      expect(res.reason).toBe('scene_form_not_found');
-    } finally {
-      await page.close();
-    }
-  });
-
+describe('W06 Truthful Feature Handlers — Tools Gallery', () => {
   it('flow_open_tools_gallery blocks if sidebar navigation fails or remains in All media', async () => {
     const page = await makePage(`
       <html>
@@ -248,7 +225,7 @@ describe('W06 Truthful Feature Handlers — Scenes and Tools Gallery', () => {
   });
 });
 
-describe('W06 Truthful Feature Handlers — Grid Architect and Arbitrary Tools', () => {
+describe('W06 Truthful Feature Handlers — Arbitrary Tools', () => {
   it('flow_use_flow_tool returns blocked on 404 page', async () => {
     const page = await makePage({
       '/tools/grid-architect': '<html><head><title>404 Not Found</title></head><body><h1>Error: 404</h1></body></html>',
@@ -263,7 +240,7 @@ describe('W06 Truthful Feature Handlers — Grid Architect and Arbitrary Tools',
     }
   }, 30000);
 
-  it('flow_use_grid_architect blocks when account requires Upgrade to create/remix entitlement', async () => {
+  it('flow_use_tool blocks when account requires Upgrade to create/remix entitlement', async () => {
     const page = await makePage(`
       <html>
         <body>
@@ -277,36 +254,12 @@ describe('W06 Truthful Feature Handlers — Grid Architect and Arbitrary Tools',
       </html>
     `, PROJECT_URL);
     try {
-      const res = await withPage(page, async () => handleUseGridArchitect({
-        theme_prompt: 'Cyberpunk city at night',
+      const res = await withPage(page, async () => handleUseFlowTool({
+        tool_name: 'Grid Architect',
         project_url: PROJECT_URL,
       }));
       expect(res.status).toBe('blocked');
       expect(res.reason).toBe('entitlement_required');
-    } finally {
-      await page.close();
-    }
-  }, 30000);
-
-  it('flow_use_grid_architect blocks when tool form is missing, refusing to write theme into video composer', async () => {
-    const page = await makePage(`
-      <html>
-        <body>
-          <nav class="sidebar"><mat-list-item>All media</mat-list-item></nav>
-          <textarea placeholder="Ask Flow to generate a video...">Original theme</textarea>
-        </body>
-      </html>
-    `, PROJECT_URL);
-    try {
-      const res = await withPage(page, async () => handleUseGridArchitect({
-        theme_prompt: 'Cyberpunk city at night',
-        project_url: PROJECT_URL,
-      }));
-      expect(res.status).toBe('blocked');
-      expect(res.reason).toBe('grid_architect_form_not_found');
-
-      const composerText = await page.inputValue('textarea');
-      expect(composerText).not.toContain('Cyberpunk city');
     } finally {
       await page.close();
     }

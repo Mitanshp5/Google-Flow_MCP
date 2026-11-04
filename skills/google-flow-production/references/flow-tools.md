@@ -38,5 +38,3 @@ A brief or beat-sheet approval does not authorize spending. Conversely, explicit
 ## Local planning and editing
 
 `flow_script_create`, `flow_script_update`, `flow_script_status`, and `flow_script_review` support revisioned local planning. `flow_script_run` supports bounded local candidate intent, explicit local import, and review artifacts; it does not drive an autonomous remote video pipeline. Do not imply a generic brief or shot template is already a valid script-schema payload.
-
-`flow_export_reel` accepts exactly three distinct prompt prefixes identifying existing clips in the open project. It is prepare-only unless `prepare_only:false`. Its current implementation requires observed Omni 1.1 Flash/360p clips, vertical framing, at least seven seconds per input, and audio tracks. It trims each to seven seconds and outputs a fixed 21-second vertical reel; it expects `ffprobe.exe` beside the supplied `ffmpeg_path`. Do not use it for arbitrary clips, durations, silent footage, or general cross-platform assembly. See [assembly](assembly.md).

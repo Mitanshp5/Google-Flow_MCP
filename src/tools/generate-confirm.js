@@ -236,7 +236,12 @@ export async function handleGenerateConfirm(args = {}) {
     }
     if (await found.locator.isDisabled().catch(() => true)) {
       await takeScreenshot(page, 'confirm-generate-disabled');
-      throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, 'Generate button is disabled');
+      const prepAgeMs = prep.createdAt ? Date.now() - new Date(prep.createdAt).getTime() : null;
+      const isStale = prepAgeMs !== null && prepAgeMs > 60000;
+      const msg = isStale
+        ? 'Generate button is disabled for stale preparation ' + rawId + ' (' + Math.round(prepAgeMs / 1000) + 's old). Re-run prepare tool before confirming.'
+        : 'Generate button is disabled; composer state may have changed. Re-run preparation.';
+      throw new FlowError(ErrorCodes.GENERATION_BUTTON_DISABLED, msg, { prepAgeMs, isStale });
     }
     await takeScreenshot(page, 'confirm-before-click');
     reserveProjectCredits({

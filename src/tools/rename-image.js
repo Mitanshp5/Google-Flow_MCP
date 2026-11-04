@@ -14,7 +14,16 @@ export async function handleRenameImage(args, deps = {}) {
   // Same-project context may still be a standalone character/tool editor,
   // which has no library sidebar. Return to that verified project's root.
   await ensureProjectLibrary(page);
-  if (!(await (deps.navigate || navigateToSidebar)(page, 'Images'))) {
+  let navOk = await (deps.navigate || navigateToSidebar)(page, 'Images');
+  if (!navOk && !deps.navigate) {
+    navOk = await navigateToSidebar(page, 'All media');
+    if (!navOk) {
+      const url = page.url();
+      const isProjectRoot = /\/project\/[^/]+(?:\/)?(?:[?#]|$)/i.test(url) && !/\/project\/[^/]+\/(?:character|tools|trash)/i.test(url);
+      if (isProjectRoot) navOk = true;
+    }
+  }
+  if (!navOk) {
     throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'Images section did not open');
   }
   const matches = [];

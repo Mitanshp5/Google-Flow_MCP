@@ -12,13 +12,13 @@
   chromeUserDataDir, chromeProfile, cdpPort) — this script will use those if
   flow.config.json exists.
 #>
-
-$ErrorActionPreference = 'Stop'
-
 param(
     [switch]$DryRun,
     [switch]$Help
 )
+
+$ErrorActionPreference = 'Stop'
+
 
 # Safe modes BEFORE any side effect (no port checks, no Chrome launch below).
 foreach ($a in $args) {

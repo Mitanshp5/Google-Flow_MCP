@@ -14,6 +14,7 @@ export default [
       'outputs/**',
       'screenshots-debug/**',
       'chrome-profile-kiara/**',
+      'flow-chrome-profile/**',
       'qa-output/**',
       'evidence/**',
       'brag-output/**',

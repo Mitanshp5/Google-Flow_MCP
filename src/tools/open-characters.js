@@ -31,11 +31,18 @@ export async function handleOpenCharacters(args = {}) {
   await ensureProjectLibrary(page);
   const nav = await navigateSidebarDetailed(page, 'Characters');
   if (!nav.ok) {
-    const failedTitle = await page.title().catch(()=>'');
-    const failedBody = await page.textContent('body').catch(()=>'');
-    const missing = isErrorHtml({title:failedTitle,bodyText:failedBody,url:page.url()});
-    return {status:'blocked',reason:missing?'page_not_found':'character_feature_unverified',url:page.url(),
-      navigation_verified:false,blocker:nav.blocker,message:'Characters library could not be opened; no creation route was substituted.'};
+    const curUrl = page.url() || '';
+    const isCharUrl = /\/project\/[^/]+\/characters?(?:[?#]|$)/i.test(curUrl);
+    const hasCharElements = await page.getByRole('heading', { name: /^characters?$/i }).first().isVisible().catch(() => false)
+      || await page.locator('flow-character-tile').first().isVisible().catch(() => false)
+      || await page.getByRole('button', { name: /^(?:New|Create) character$/i }).isVisible().catch(() => false);
+    if (!isCharUrl && !hasCharElements) {
+      const failedTitle = await page.title().catch(()=>'');
+      const failedBody = await page.textContent('body').catch(()=>'');
+      const missing = isErrorHtml({title:failedTitle,bodyText:failedBody,url:page.url()});
+      return {status:'blocked',reason:missing?'page_not_found':'character_feature_unverified',url:page.url(),
+        navigation_verified:false,blocker:nav.blocker,message:'Characters library could not be opened; no creation route was substituted.'};
+    }
   }
   await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
   await page.waitForTimeout(2000);
