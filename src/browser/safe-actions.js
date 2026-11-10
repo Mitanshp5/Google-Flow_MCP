@@ -774,6 +774,82 @@ export async function readToolState(page) {
   return state;
 }
 
+export async function readAuthoritativeSettings(page) {
+  const result = {
+    mode: null,
+    model: null,
+    ratio: null,
+    quality: null,
+    duration: null,
+    quantity: null,
+    referenceMode: null,
+    source: 'authoritative_panel',
+  };
+
+  const chipState = await readToolState(page);
+  result.mode = chipState.mode || null;
+  result.ratio = chipState.ratio || null;
+  result.quality = chipState.quality || null;
+  result.duration = chipState.duration || null;
+  result.quantity = chipState.quantity || null;
+
+  const opened = await openBarSettings(page);
+  if (opened.panel) {
+    try {
+      const panelInfo = await opened.panel.evaluate(() => {
+        const out = { model: null, mode: null, ratio: null, quality: null, duration: null, quantity: null };
+        const modelBtn = document.querySelector('.mat-mdc-menu-panel button.mat-mdc-menu-trigger, button.mat-mdc-menu-trigger, [aria-label*="model" i]');
+        if (modelBtn) {
+          out.model = (modelBtn.innerText || modelBtn.textContent || '').trim();
+        }
+        const buttons = Array.from(document.querySelectorAll('.cdk-overlay-pane button, [role="dialog"] button, [role="dialog"] [role="tab"]'));
+        for (const b of buttons) {
+          const txt = (b.innerText || b.textContent || '').trim();
+          const isSelected = b.getAttribute('aria-pressed') === 'true'
+            || b.getAttribute('aria-checked') === 'true'
+            || b.getAttribute('data-state') === 'on'
+            || b.classList.contains('mat-button-toggle-checked')
+            || /selected|active/i.test(b.className || '');
+          if (!isSelected) continue;
+
+          if (/^video$/i.test(txt)) out.mode = 'video';
+          else if (/^image$/i.test(txt)) out.mode = 'image';
+          else if (/^\d+\s*:\s*\d+$/.test(txt)) out.ratio = txt.replace(/\s+/g, '');
+          else if (/^(360p|720p|1080p)$/i.test(txt)) out.quality = txt.toLowerCase();
+          else if (/^\d+s$/i.test(txt)) out.duration = txt.toLowerCase();
+          else if (/^[x×]\s*[1-4]$/i.test(txt)) {
+            const m = txt.match(/[1-4]/);
+            if (m) out.quantity = Number(m[0]);
+          }
+        }
+        return out;
+      }).catch(() => null);
+
+      if (panelInfo) {
+        if (panelInfo.model) {
+          const { decontaminateModelField } = await import('./capabilities.js');
+          result.model = decontaminateModelField(panelInfo.model);
+        }
+        if (panelInfo.mode) result.mode = panelInfo.mode;
+        if (panelInfo.ratio) result.ratio = panelInfo.ratio;
+        if (panelInfo.quality) result.quality = panelInfo.quality;
+        if (panelInfo.duration) result.duration = panelInfo.duration;
+        if (panelInfo.quantity) result.quantity = panelInfo.quantity;
+      }
+    } finally {
+      await closeSettingsPanel(page);
+    }
+  }
+
+  try {
+    const { readComposerReferences } = await import('./composer-references.js');
+    const refs = await readComposerReferences(page);
+    if (refs?.mode) result.referenceMode = refs.mode;
+  } catch { /* ok */ }
+
+  return result;
+}
+
 /**
  * Pure decision step for attachment verification (P0-1/P0-2), unit-tested.
  * verified means the file input demonstrably accepted every requested file

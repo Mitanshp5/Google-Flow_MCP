@@ -12,6 +12,19 @@ Use the tool definitions exposed by the connected server, not names copied from 
 
 ## Preparation
 
+### Tool Selection Matrix
+
+| User intent | Correct operation |
+|---|---|
+| Create a visual reference sheet of a character | `flow_generate_image` |
+| Create a reusable native Google Flow Character | `flow_create_character` |
+| Inspect registered project characters | `flow_open_characters` |
+| Rename a generated Flow Character | `flow_rename_character` |
+| List exact `@` references available in the project | `flow_list_mention_options` |
+| Generate a video shot | `flow_generate_video` |
+| Submit a prepared paid generation | `flow_generate_confirm` |
+| Download a completed exact asset | `flow_download_latest` with `asset_id` where needed |
+
 - `flow_generate_image`: `prompt`, `model`, `ratio`, `reference_images`, `ingredients`, `use_character`, `use_scene`, `project_name`, `campaign`, `auto_confirm:false`, and optionally `max_credits`. Open the intended project first; the image tool does not advertise `project_url`.
 - `flow_create_character`: `name`, `description`, optional `archetype`/`reference_images`, `project_name`, `campaign`, and `auto_confirm:false`. Use its advertised fields only. Open and verify the project first; do not assume image-model or project-URL fields are advertised for this tool.
 - `flow_list_mention_options`: discover actual project reference names before preparing generation. Use names exactly as returned, not fabricated IDs. Its advertised scope fields are `project_name` and `campaign`; verify the active project rather than relying on an unadvertised URL argument.
@@ -22,6 +35,8 @@ Use the tool definitions exposed by the connected server, not names copied from 
 The video schema currently advertises ratios `16:9`/`9:16`, durations `4s`/`6s`/`8s`/`10s`, and qualities `360p`/`720p`. Image ratios also include `1:1`, `4:3`, and `3:4`. Schema membership alone does not establish selected-model support. Do not assume a universal ingredient duration: verify the exact model/mode/duration combination and preserve blockers instead of coercing the request.
 
 ## Approval and spending
+
+All paid generations (image, video, character) converge on one guarded server-side commit boundary (`commitPreparedGeneration`). Out-of-band DOM clicks, standalone Playwright click scripts, or coordinate-based clicks are strictly banned as they bypass credit quotes, budget reservations, and idempotent transaction tracking.
 
 The preferred path is prepare, inspect, authorize, then `flow_generate_confirm` with the exact returned `job_id` and explicit `max_credits`. Only `ready_for_confirmation` is eligible; `prepared_unverified` is not. Confirm the immediately prepared shot before modifying the composer or preparing another shot. Do not batch preparations and assume old jobs remain safely confirmable.
 

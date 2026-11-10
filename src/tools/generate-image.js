@@ -4,19 +4,22 @@ import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 
-import { ensureProjectInContext, extractProjectId } from '../navigation/project-navigator.js';
+import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
-import { get, getFlowHome } from '../utils/config.js';
+import { get } from '../utils/config.js';
+import { commitPreparedGeneration } from '../domain/commit-prepared-generation.js';
 import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles, findActionButton, GENERATE_BUTTON_SELECTORS } from '../browser/safe-actions.js';
 import { resolveModel, getUniverse, isModelLiveVerified } from '../utils/models.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js';
-import { createOperationStore } from '../domain/operations.js';
 import { extractObservedAccount } from '../browser/app-state.js';
 import { parseCostLabel } from '../browser/cost-quote.js';
-import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { getSessionScope } from '../browser/session-scope.js';
 import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
-import { createLiveAuthorization } from '../domain/live-submission.js';
+import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { createOperationStore } from '../domain/operations.js';
+import { getFlowHome } from '../utils/config.js';
+import { extractProjectId } from '../navigation/project-navigator.js';
 import fs from 'fs';
 
 function selectModel(requested) {
@@ -64,7 +67,7 @@ export async function handleGenerateImage(args) {
     jobQueue.startJob(job.id);
     const page = getPage();
 
-    return await withUiTransaction(async ({ epoch }) => {
+    const prepared = await withUiTransaction(async ({ epoch }) => {
     assertUiCurrent(epoch);
 
     // STEP 1: Ensure we're in a project context
@@ -82,7 +85,7 @@ export async function handleGenerateImage(args) {
       await page.goto(rootUrl, { waitUntil: 'domcontentloaded' });
       await page.waitForTimeout(2000);
     }
-    const liveAuthorization = await createLiveAuthorization({ page, confirmed: autoConfirm, maxCredits: args.max_credits });
+
 
     // Agent mode hijacks the prompt box — turn it OFF every run, verified.
     try {
@@ -191,10 +194,13 @@ export async function handleGenerateImage(args) {
     await promptInput.fill(prompt);
     logger.info('Prompt filled', { promptLength: prompt.length });
     await page.waitForTimeout(500);
-    const filledText = await promptInput.textContent().catch(() => '')
-      || await promptInput.inputValue().catch(() => '');
-    const normalizedExpected = prompt.replace(/\s+/g, ' ').trim();
-    const normalizedActual = String(filledText).replace(/\s+/g, ' ').trim();
+    let filledText = await promptInput.inputValue().catch(() => '');
+    if (!filledText) {
+      filledText = await promptInput.evaluate(el => (el.innerText !== undefined ? el.innerText : el.textContent) || '').catch(() => '');
+    }
+    const normalizePrompt = (s) => String(s || '').replace(/[\r\n\t]+/g, ' ').replace(/[\u00a0\u2000-\u200b\s]+/g, ' ').trim();
+    const normalizedExpected = normalizePrompt(prompt);
+    const normalizedActual = normalizePrompt(filledText);
     if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
@@ -278,6 +284,51 @@ export async function handleGenerateImage(args) {
 
     const isReady = modelVerified && ratioVerified && quantityVerified && referencesVerified;
 
+    const blockers = [];
+    if (!modelVerified) {
+      blockers.push({
+        field: 'model',
+        code: 'MODEL_NOT_CONFIRMED',
+        requested: model,
+        observed: postState?.model || null,
+        action: 'select the requested model in settings panel',
+      });
+    }
+    if (!ratioVerified) {
+      blockers.push({
+        field: 'ratio',
+        code: 'RATIO_MISMATCH',
+        requested: ratio,
+        observed: postState?.ratio || null,
+        action: 'select requested aspect ratio',
+      });
+    }
+    if (!quantityVerified) {
+      blockers.push({
+        field: 'quantity',
+        code: 'QUANTITY_MISMATCH',
+        requested: qty,
+        observed: postState?.quantity || null,
+        action: 'select requested quantity',
+      });
+    }
+    if (!refImagesOk) {
+      blockers.push({
+        field: 'reference_images',
+        code: 'ATTACHMENT_UNVERIFIED',
+        requested: refPaths,
+        action: 'verify reference image files and permissions',
+      });
+    }
+    if (!mentionsOk) {
+      blockers.push({
+        field: 'ingredients',
+        code: 'INGREDIENTS_FAILED',
+        failed: mentionResults.failed,
+        action: 'use flow_list_mention_options to discover exact @names',
+      });
+    }
+
     const settingsVerification = {
       requested: { model, ratio, quantity: qty },
       actual: {
@@ -287,115 +338,144 @@ export async function handleGenerateImage(args) {
       },
       verified: isReady,
       references_verified: referencesVerified,
+      blockers,
     };
 
-    // ⚠️ STEP 7: DECISION POINT — auto_confirm determines if we click Generate
-    if (!autoConfirm) {
-      // SAFE MODE: Setup only, no click. Return "ready_for_confirmation".
-      const setupScreenshot = await takeScreenshot(page, 'image-ready-for-confirmation');
-      const result = {
-        status: isReady ? 'ready_for_confirmation' : 'prepared_unverified',
-        type: 'image',
-        message: isReady
-          ? '✅ Prompt, model and ratio are prepared. No credits consumed. ' +
-            'To generate and consume credits, call again with auto_confirm=true.'
-          : '⚠️ Image setup completed with unverified settings or references. Review UI state before confirming.',
-        model_used: model,
-        ratio,
-        quantity: qty,
-        prompt,
-        settings_verification: settingsVerification,
-        ingredients_inserted: mentionResults.inserted,
-        ingredients_failed: mentionResults.failed,
-        references: {
-          ...references,
-          verified: referencesVerified,
-        },
-        account: extractObservedAccount(await page.content()),
-        screenshot: setupScreenshot,
-        jobId: job.id,
-      };
+    const sessionSubmission = getSessionScope()?.handlerSubmission;
+    if (autoConfirm && sessionSubmission) {
       assertUiCurrent(epoch);
-      jobQueue.completeJob(job.id, result);
-      return result;
-    }
 
-    // Live submission path: auto_confirm=true requested.
-    // Must extract verified observed bindings from actual page state.
-    // Unverified or missing bindings fail closed (denied).
-    assertUiCurrent(epoch);
+      const pageHtml = await page.content().catch(() => '');
+      let observedAccount = extractObservedAccount(pageHtml);
+      if (!observedAccount && !pageHtml) {
+        try {
+          const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
+          observedAccount = extractObservedAccount(fallbackHtml);
+        } catch { /* ignore */ }
+      }
 
-    const pageHtml = await page.content().catch(() => '');
-    let observedAccount = extractObservedAccount(pageHtml);
-    if (!observedAccount && !pageHtml) {
-      try {
-        const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
-        observedAccount = extractObservedAccount(fallbackHtml);
-      } catch { /* ignore */ }
-    }
+      const currentUrl = page.url() || '';
+      const observedProjectId = extractProjectId(currentUrl);
+      const verifiedSettings = settingsVerification?.verified ? settingsVerification.actual : null;
 
-    const currentUrl = page.url() || '';
-    const observedProjectId = extractProjectId(currentUrl);
-    const verifiedSettings = settingsVerification?.verified ? settingsVerification.actual : null;
+      const baselineIds = await page.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll('img'));
+        const ids = [];
+        imgs.forEach(img => {
+          const src = img.src || '';
+          const match = src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
+          if (match) ids.push(match[1]);
+        });
+        return [...new Set(ids)];
+      }).catch(() => []);
+      const baseline = { ids: baselineIds, observedAt: Date.now() };
 
-    const baselineIds = await page.evaluate(() => {
-      const imgs = Array.from(document.querySelectorAll('img'));
-      const ids = [];
-      imgs.forEach(img => {
-        const src = img.src || '';
-        const match = src.match(/media\.getMediaUrlRedirect\?name=([a-f0-9-]+)/);
-        if (match) ids.push(match[1]);
-      });
-      return [...new Set(ids)];
-    }).catch(() => []);
-    const baseline = { ids: baselineIds, observedAt: Date.now() };
+      const costText = await page.evaluate(() => {
+        const els = Array.from(document.querySelectorAll('*'));
+        for (const el of els) {
+          const text = (el.innerText || el.textContent || '').trim();
+          if (/generating will use \d+ credits|\d+\s*credits?/i.test(text) && text.length < 60) {
+            return text;
+          }
+        }
+        return null;
+      }).catch(() => null);
 
-    const costText = await page.evaluate(() => {
-      const els = Array.from(document.querySelectorAll('*'));
-      for (const el of els) {
-        const text = (el.innerText || el.textContent || '').trim();
-        if (/generating will use \d+ credits|\d+\s*credits?/i.test(text) && text.length < 60) {
-          return text;
+      let quote = null;
+      if (costText) {
+        const parsed = parseCostLabel(costText, { quantity: qty });
+        if (parsed.state === 'known') {
+          quote = {
+            total: parsed.totalUpperBound,
+            unit: parsed.unit,
+            quantity: parsed.quantity,
+            raw: parsed.raw,
+            observedAt: Date.now(),
+          };
         }
       }
-      return null;
-    }).catch(() => null);
 
-    let quote = null;
-    if (costText) {
-      const parsed = parseCostLabel(costText, { quantity: qty });
-      if (parsed.state === 'known') {
-        quote = {
-          total: parsed.totalUpperBound,
-          unit: parsed.unit,
-          quantity: parsed.quantity,
-          raw: parsed.raw,
-          observedAt: Date.now(),
-        };
-      }
+      const requestPayload = { prompt, model, ratio, quantity: qty, type: 'image' };
+      const submissionContext = await buildHandlerSubmissionContext({
+        page,
+        epoch,
+        requestPayload,
+        inputLocator: promptInput,
+        refs: refPaths,
+        mentionNames,
+      });
+
+      const submitted = await executeDurableSubmission({
+        page,
+        epoch,
+        opStore: sessionSubmission.opStore || createOperationStore(getFlowHome()),
+        requestPayload,
+        observedAccount,
+        observedProjectId,
+        verifiedSettings,
+        refs: refPaths,
+        baseline,
+        quote,
+        ...submissionContext,
+      });
+      jobQueue.completeJob(job.id, submitted);
+      return { ...submitted, jobId: job.id };
     }
 
-    // Delegate to W05 submission adapter: enforces verified bindings,
-    // checks UI transaction epoch, runs atomic durable commit (commitPreInvocation),
-    // records the invocation boundary before an explicitly authorized click.
-    const requestPayload = { prompt, model, ratio, quantity: qty, type: 'image' };
-    const submissionContext = await buildHandlerSubmissionContext({ page, epoch, requestPayload, inputLocator: promptInput, refs: refPaths, mentionNames, liveAuthorization });
-    const submitted = await executeDurableSubmission({
-      page,
-      epoch,
-      opStore: createOperationStore(getFlowHome()),
-      requestPayload,
-      observedAccount,
-      observedProjectId,
-      verifiedSettings,
-      refs: refPaths,
-      baseline,
-      quote,
-      ...submissionContext,
-    });
-    jobQueue.completeJob(job.id, submitted);
-    return { ...submitted, jobId: job.id };
+    const setupScreenshot = await takeScreenshot(page, 'image-ready-for-confirmation');
+    const result = {
+      status: isReady ? 'ready_for_confirmation' : 'prepared_unverified',
+      type: 'image',
+      message: isReady
+        ? '✅ Prompt, model and ratio are prepared. No credits consumed. ' +
+          'To generate and consume credits, call again with auto_confirm=true.'
+        : '⚠️ Image setup completed with unverified settings or references. Review UI state before confirming.',
+      model_used: model,
+      ratio,
+      quantity: qty,
+      prompt,
+      settings_verification: settingsVerification,
+      ingredients_inserted: mentionResults.inserted,
+      ingredients_failed: mentionResults.failed,
+      references: {
+        ...references,
+        verified: referencesVerified,
+      },
+      blockers,
+      diagnostics: {
+        requested: settingsVerification.requested,
+        actual: settingsVerification.actual,
+        verified: settingsVerification.verified,
+        blockers,
+        attempts: barAll,
+        screenshot: setupScreenshot,
+      },
+      account: extractObservedAccount(await page.content()),
+      screenshot: setupScreenshot,
+      jobId: job.id,
+    };
+    assertUiCurrent(epoch);
+    jobQueue.completeJob(job.id, result);
+    return result;
     }); // end withUiTransaction
+
+    if (prepared.status === 'submitted') {
+      return prepared;
+    }
+    if (autoConfirm) {
+      if (prepared.status === 'ready_for_confirmation') {
+        return await commitPreparedGeneration({
+          job_id: prepared.jobId,
+          max_credits: args.max_credits,
+          wait_ms: args.wait_ms || 2000,
+        });
+      }
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+        `Image preparation is unverified (${(prepared.blockers || []).map(b => b.message || b.field).join('; ') || 'unverified'}). Refusing auto_confirm.`,
+        { prepared });
+    }
+
+    return prepared;
   } catch (err) {
     try {
       await takeScreenshot(getPage(), 'generate-image-error');

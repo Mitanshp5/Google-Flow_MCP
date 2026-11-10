@@ -458,6 +458,8 @@ const TOOL_DEFINITIONS = [
 ];
 
 const pendingGeneration = new Set();
+jobQueue.on('reset', () => pendingGeneration.clear());
+export function resetPendingGeneration() { pendingGeneration.clear(); }
 async function handleToolCall(name, args) {
   return normalizeToolResult(await handleNativeToolCall(name, args));
 }
@@ -684,6 +686,8 @@ async function dispatchToolCall(name, args, epoch) {
       const result = await handleDownloadLatest(v);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     }
+
+
 
 
     case 'flow_create_character': {

@@ -4,6 +4,22 @@
 
 There is no MCP editor or exporter tool. Assembly of reviewed clips is a local, separately authorized operation. Use a local edit only when it is explicitly approved; otherwise return the verified source clips with an honest assembly limitation. This skill does not add an arbitrary-length exporter or automatically run FFmpeg.
 
+## Scripted Media Assembly Helper
+
+A cross-platform helper is provided at `scripts/assemble-video.mjs` to automate FFprobe clip probing, robust last-frame extraction with frame-index fallback, and concat verification:
+
+```bash
+# Example invocation
+node scripts/assemble-video.mjs --inputs clip1.mp4 clip2.mp4 clip3.mp4 --output final_cut.mp4 --extract-frames --report assembly_report.json
+```
+
+The script verifies:
+1. Every input has a valid decodable video stream via FFprobe.
+2. Extracts continuation frames into a named directory with size and format verification.
+3. Normalizes and concatenates into H.264 / AAC MP4.
+4. Confirms final duration matches expected clip sum within ±1.0s.
+5. Emits a structured JSON report documenting clip inputs, output dimensions, audio layout, and frame continuity paths.
+
 ## Plan a local edit
 
 1. Preserve each original verified download. Work on separate named copies in an approved output directory.

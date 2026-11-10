@@ -22,6 +22,28 @@ describe('video prompt scaffold (Higgsfield separation rule)', () => {
     const w3 = checkPromptContradictions({ prompt: 'a walk', ingredients: ['Bob the Astronaut'] });
     expect(w3.join(' ')).toMatch(/name/i);
   });
+  it('does not classify camera movements as technical optics', () => {
+    const moves = [
+      'fast camera orbit around the character',
+      'slow dolly in on face',
+      'camera tracks low over the bridge',
+      'crane shot rising up',
+      'tracking shot along the alley',
+    ];
+    for (const prompt of moves) {
+      const warnings = checkPromptContradictions({ prompt, ingredients: [] });
+      expect(warnings.filter(w => /optics/i.test(w))).toHaveLength(0);
+    }
+    const opticsPrompts = [
+      'shot on 35mm lens with wide aperture',
+      'f/1.4 lens bokeh',
+      '50mm focal length',
+    ];
+    for (const prompt of opticsPrompts) {
+      const warnings = checkPromptContradictions({ prompt, ingredients: [] });
+      expect(warnings.some(w => /optics/i.test(w))).toBe(true);
+    }
+  });
   it('duration normalize is exact (no silent downgrade input)', () => {
     expect(normalizeDuration('8s')).toBe('8s');
     expect(normalizeDuration(8)).toBe('8s');

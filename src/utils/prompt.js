@@ -1,11 +1,18 @@
 import { FlowError, ErrorCodes } from './errors.js';
 
-// Optics vocabulary belongs in UI selectors, never in prompt text.
-// Prompt carries scene + action only (Higgsfield separation rule,
-// Veo 3.1 guide: Cinematography + Subject + Action + Context + Style).
-const OPTICS_HINTS = [
-  'f/1.4', 'f/4', 'f/11', 'anamorphic', '35mm', '16mm', '8mm',
-  'aperture', 'focal', 'lens', 'dolly', 'crane', 'orbit', 'jib', 'drone',
+// Technical optics vocabulary (lens specs, aperture, focal length).
+// Scene direction / camera movement (dolly, orbit, crane, tracking shot) is valid
+// cinematic staging and is separated from technical optics.
+export const TECHNICAL_OPTICS_HINTS = [
+  'f/1.4', 'f/1.8', 'f/2', 'f/2.8', 'f/4', 'f/5.6', 'f/8', 'f/11', 'f/16',
+  'anamorphic', '35mm', '16mm', '8mm', '50mm', '85mm',
+  'aperture', 'focal length', 'focal', 'lens',
+];
+
+export const CAMERA_MOVEMENT_HINTS = [
+  'dolly', 'crane', 'orbit', 'jib', 'drone',
+  'tracking shot', 'push-in', 'pull-back', 'pan', 'tilt',
+  'aerial view', 'slow pan', 'camera tracks', 'camera track',
 ];
 
 const CAMERA_MOVES = [
@@ -32,9 +39,9 @@ export function buildVideoPrompt({ prompt, camera, style }) {
 export function checkPromptContradictions({ prompt, ingredients = [], startFrame, endFrame }) {
   const warnings = [];
   const lower = String(prompt || '').toLowerCase();
-  const hasOptics = OPTICS_HINTS.some(h => lower.includes(h));
+  const hasOptics = TECHNICAL_OPTICS_HINTS.some(h => lower.includes(h));
   if (hasOptics) {
-    warnings.push('Prompt contains optics terms (lens/aperture/camera body) — prefer UI selectors; keep prompt to scene+action.');
+    warnings.push('Prompt contains technical optics parameters (lens/aperture/camera body) — prefer UI selectors; keep prompt to scene+action.');
   }
   if ((startFrame || endFrame) && !/transition|start|end|frame|arc|morph|continu/i.test(String(prompt))) {
     warnings.push('Frames supplied but prompt does not describe the transition/action between them — add it for best interpolation.');

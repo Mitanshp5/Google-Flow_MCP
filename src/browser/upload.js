@@ -4,7 +4,9 @@
 import fs from 'fs';
 import path from 'path';
 import { validateLocalImport, sha256Hex } from '../assets/catalog.js';
-import {readComposerReferences} from './composer-references.js';
+import { readComposerReferences } from './composer-references.js';
+import { assetHashRegistry } from '../assets/catalog.js';
+import { closeOwnedOverlays } from './overlay-manager.js';
 export const ADD_INGREDIENTS_SELECTORS = [
   'button:has-text("Add ingredients")',
   '[aria-label*="Add ingredients" i]',
@@ -222,7 +224,10 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
   const selected = [];
   for (const name of names) {
     const matches = identities.filter(a => a.name === name && a.assetId);
-    if (matches.length !== 1) return { verified: false, acknowledged: [], reason: `Upload still pending or ambiguous: ${name}` };
+    if (matches.length !== 1) {
+      await closeOwnedOverlays(page, { preserveRights: true });
+      return { verified: false, acknowledged: [], reason: `Upload still pending or ambiguous: ${name}` };
+    }
     selected.push(matches[0]);
   }
   for (let i = 0; i < selected.length; i++) {
@@ -238,9 +243,13 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
       ? entryLocator.click({timeout:3000}).then(() => true).catch(() => false)
       : clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
     if (!await item.isVisible().catch(() => false) && !await reopen()) {
+      await closeOwnedOverlays(page, { preserveRights: true });
       return { verified: false, acknowledged: [], reason: 'Cannot reopen ingredient picker' };
     }
-    if (await item.count() !== 1) return { verified: false, acknowledged: [], reason: 'Uploaded item is ambiguous or missing' };
+    if (await item.count() !== 1) {
+      await closeOwnedOverlays(page, { preserveRights: true });
+      return { verified: false, acknowledged: [], reason: 'Uploaded item is ambiguous or missing' };
+    }
     await item.click();
     // Some picker versions insert directly on selection; others require the
     // preview confirmation. In either case the composer ID/slot below is proof.
@@ -269,7 +278,7 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
     }));
     if (ids.includes(identity.assetId)) acknowledged.push(identity);
   }
-  await page.keyboard.press('Escape');
+  await closeOwnedOverlays(page, { preserveRights: true });
   return { verified: acknowledged.length === names.length, acknowledged,
     reason: acknowledged.length === names.length ? null : 'Uploaded assets not all present in the composer' };
 }
@@ -320,11 +329,13 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
   ).filter(Boolean)).catch(() => []);
   const opened = await openUploadPicker(page, opts);
   if (!opened.fileChooser) {
+    await closeOwnedOverlays(page, { preserveRights: true });
     return { requested, verified: false, reason: opened.error, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: false };
   }
   try {
     await opened.fileChooser.setFiles(list);
   } catch (e) {
+    await closeOwnedOverlays(page, { preserveRights: true });
     return { requested, verified: false, reason: `chooser.setFiles failed: ${e.message}`, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: true };
   }
   try {
@@ -350,5 +361,22 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
       fileChooserSeen: true, verified: false, reason: attached.reason, notes: [attached.reason] };
   }
   const ack = summarizeUploadAck({ requested, fileChooserSeen: true, inputAccepted, acknowledged });
+  await closeOwnedOverlays(page, { preserveRights: true });
+  if (ack.verified && Array.isArray(acknowledged)) {
+    for (const a of acknowledged) {
+      const rec = localRecords.find(r => r.base.toLowerCase() === String(a.name).toLowerCase());
+      if (rec && a.assetId) {
+        assetHashRegistry.register({
+          account: opts.account,
+          projectId: opts.projectId,
+          hash: rec.hash,
+          assetId: a.assetId,
+          title: a.title || a.name,
+          byteSize: rec.sizeBytes,
+          mime: rec.mime,
+        });
+      }
+    }
+  }
   return { requested, localRecords, inputAccepted, acknowledged, fileChooserSeen: true, verified: ack.verified, notes: ack.notes };
 }

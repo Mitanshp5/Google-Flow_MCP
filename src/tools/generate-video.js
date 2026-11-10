@@ -3,23 +3,30 @@ import { getPage } from '../browser/connect.js';
 import { jobQueue } from '../queue/job-queue.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { takeScreenshot } from '../utils/screenshots.js';
-import { detectPageElements, configureGenerationUI, configurePromptBar, ensureManualMode, readToolState, attachReferenceFiles, setPromptBarMode, setPromptBarModel } from '../browser/safe-actions.js';
+import { detectPageElements, configureGenerationUI, configurePromptBar, ensureManualMode, readToolState, readAuthoritativeSettings, attachReferenceFiles, setPromptBarMode, setPromptBarModel } from '../browser/safe-actions.js';
 import { saveMetadata, getOutputDir } from '../utils/file-manager.js';
-import { ensureProjectInContext, navigateToSidebar } from '../navigation/project-navigator.js';
+import { ensureProjectInContext, navigateToSidebar, extractProjectId } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
 import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { getSelectors } from '../utils/selectors.js';
-import { get, getFlowHome } from '../utils/config.js';
-import { resolveModel, getUniverse, resolveIngredientsDuration } from '../utils/models.js';
+import { get } from '../utils/config.js';
+import { resolveModel, getUniverse, resolveIngredientsDuration, isModelLiveVerified } from '../utils/models.js';
+import { commitPreparedGeneration } from '../domain/commit-prepared-generation.js';
 import { withUiTransaction, assertUiCurrent } from '../browser/ui-transaction.js';
-import { createOperationStore } from '../domain/operations.js';
-import { extractProjectId } from '../navigation/project-navigator.js';
+
+
 import { extractObservedAccount } from '../browser/app-state.js';
 import { parseCostLabel } from '../browser/cost-quote.js';
-import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { getSessionScope } from '../browser/session-scope.js';
 import { buildHandlerSubmissionContext } from '../domain/handler-submission-context.js';
-import { createLiveAuthorization } from '../domain/live-submission.js';
+import { executeDurableSubmission } from '../domain/submission-adapter.js';
+import { createOperationStore } from '../domain/operations.js';
+import { getFlowHome } from '../utils/config.js';
+
+
+
+
 import {setVideoReferenceMode, attachVideoFrame} from '../browser/video-frames.js';
 import fs from 'fs';
 import path from 'path';
@@ -30,10 +37,10 @@ function selectVideoModel(requested) {
   return r ? r : null;
 }
 
-export function isVideoPreparationVerified({ settingsVerified, attachVerified, frames = {}, failedMentions = [], failedSettings = [] }) {
+export function isVideoPreparationVerified({ settingsVerified, attachVerified, frames = {}, failedMentions = [], failedSettings = [], blockers = [] }) {
   return settingsVerified === true && attachVerified === true
     && Object.values(frames).every(frame => frame.verified === true)
-    && failedMentions.length === 0 && failedSettings.length === 0;
+    && failedMentions.length === 0 && failedSettings.length === 0 && blockers.length === 0;
 }
 
 /**
@@ -126,7 +133,7 @@ export async function handleGenerateVideo(args) {
     jobQueue.startJob(job.id);
     const page = getPage();
 
-    return await withUiTransaction(async ({ epoch }) => {
+    const prepared = await withUiTransaction(async ({ epoch }) => {
     assertUiCurrent(epoch);
 
     // Ensure we're in a project context
@@ -293,42 +300,88 @@ export async function handleGenerateVideo(args) {
     }
 
     // F04: Read back tool settings from UI and verify requested vs actual
-    const postToolState = await readToolState(page).catch(() => null);
+    const authoritative = await readAuthoritativeSettings(page).catch(() => null);
+    const postToolState = authoritative || await readToolState(page).catch(() => null);
+    const settingsBlockers = [];
+    const fields = {};
+    const actualMode = (authoritative?.mode || postToolState?.mode || '').toLowerCase();
+    const modeOk = actualMode === 'video';
+    fields.mode = { verified: modeOk, evidence: actualMode || 'unknown' };
+    if (!modeOk) {
+      settingsBlockers.push({ field: 'mode', code: 'MODE_MISMATCH', requested: 'video', observed: actualMode || null, action: 'switch to Video mode in Flow prompt bar' });
+      warnings.push(`Mode read-back mismatch: requested video, UI shows ${actualMode || 'none'}`);
+    }
+    const actualModel = authoritative?.model || (postToolState?.model !== 'unknown' ? postToolState?.model : null);
+    const modelOk = Boolean(actualModel && (actualModel.toLowerCase() === model.toLowerCase() || isModelLiveVerified(model, actualModel)));
+    const effectiveModelOk = modelOk || (modelRes && modelRes.ok && modelRes.verified && !actualModel);
+    fields.model = { verified: effectiveModelOk, evidence: actualModel || (effectiveModelOk ? model : 'unknown') };
+    if (!effectiveModelOk) {
+      settingsBlockers.push({ field: 'model', code: 'MODEL_NOT_CONFIRMED', requested: model, observed: actualModel || null, action: 'select the requested model in settings panel' });
+      warnings.push(`Model read-back mismatch: requested ${model}, UI shows ${actualModel || 'none'}`);
+    }
+    const actualRatio = authoritative?.ratio || postToolState?.ratio || null;
+    const ratioOk = actualRatio === ratio;
+    fields.ratio = { verified: ratioOk, evidence: actualRatio || 'unknown' };
+    if (!ratioOk) {
+      settingsBlockers.push({ field: 'ratio', code: 'RATIO_MISMATCH', requested: ratio, observed: actualRatio, action: 'select requested aspect ratio' });
+      warnings.push(`Ratio read-back mismatch: requested ${ratio}, UI shows ${actualRatio || 'none'}`);
+    }
+    const actualQuality = authoritative?.quality || postToolState?.quality || null;
+    const qualityOk = !wantQuality || (actualQuality && actualQuality.toLowerCase() === wantQuality.toLowerCase());
+    fields.quality = { verified: qualityOk, evidence: actualQuality || 'unknown' };
+    if (!qualityOk) {
+      settingsBlockers.push({ field: 'quality', code: 'QUALITY_MISMATCH', requested: wantQuality, observed: actualQuality, action: 'select requested quality in settings' });
+      warnings.push(`Quality read-back mismatch: requested ${wantQuality}, UI shows ${actualQuality || 'none'}`);
+    }
+    const actualDuration = authoritative?.duration || postToolState?.duration || null;
+    const durationOk_ = actualDuration === effectiveDuration;
+    fields.duration = { verified: durationOk_, evidence: actualDuration || 'unknown' };
+    if (!durationOk_) {
+      settingsBlockers.push({ field: 'duration', code: 'DURATION_MISMATCH', requested: effectiveDuration, observed: actualDuration, action: 'select requested duration in settings' });
+      warnings.push(`Duration read-back mismatch: requested ${effectiveDuration}, UI shows ${actualDuration || 'none'}`);
+    }
+    const actualQty = authoritative?.quantity || postToolState?.quantity || null;
+    const qtyOk = actualQty === qty;
+    fields.quantity = { verified: qtyOk, evidence: actualQty || 'unknown' };
+    if (!qtyOk) {
+      settingsBlockers.push({ field: 'quantity', code: 'QUANTITY_MISMATCH', requested: qty, observed: actualQty, action: 'select requested quantity' });
+      warnings.push(`Quantity read-back mismatch: requested ${qty}, UI shows ${actualQty || 'none'}`);
+    }
+    const expectedRefMode = hasFrames ? 'frames' : (mentionNames.length > 0 || resolvedUploads.length > 0 ? 'ingredients' : null);
+    const actualRefMode = authoritative?.referenceMode || null;
+    const refModeOk = !expectedRefMode || !actualRefMode || actualRefMode.toLowerCase() === expectedRefMode.toLowerCase();
+    fields.referenceMode = { verified: refModeOk, evidence: actualRefMode || 'not_observed' };
+    if (!refModeOk) {
+      settingsBlockers.push({ field: 'referenceMode', code: 'REFERENCE_MODE_MISMATCH', requested: expectedRefMode, observed: actualRefMode, action: `switch reference mode to ${expectedRefMode}` });
+      warnings.push(`Reference mode mismatch: requested ${expectedRefMode}, UI shows ${actualRefMode}`);
+    }
     const settingsVerification = {
-      requested: { duration: effectiveDuration, quality: wantQuality, ratio, quantity: qty },
+      requested: { mode: 'video', model, ratio, quality: wantQuality, duration: effectiveDuration, quantity: qty, referenceMode: expectedRefMode },
       actual: {
+        mode: actualMode || null,
+        model: actualModel || (effectiveModelOk ? model : null),
         duration: postToolState?.duration || null,
         quality: postToolState?.quality || null,
         ratio: postToolState?.ratio || null,
         quantity: postToolState?.quantity || null,
+        referenceMode: actualRefMode,
       },
-      verified: true,
+      verified: settingsBlockers.length === 0,
+      fields,
+      blockers: settingsBlockers,
     };
-    if (postToolState?.duration !== effectiveDuration) {
-      settingsVerification.verified = false;
-      warnings.push(`Duration read-back mismatch: requested ${effectiveDuration}, UI shows ${postToolState?.duration || 'none'}`);
-    }
-    if (wantQuality && postToolState?.quality !== wantQuality.toLowerCase()) {
-      settingsVerification.verified = false;
-      warnings.push(`Quality read-back mismatch: requested ${wantQuality}, UI shows ${postToolState?.quality || 'none'}`);
-    }
-    if (postToolState?.ratio !== ratio) {
-      settingsVerification.verified = false;
-      warnings.push(`Ratio read-back mismatch: requested ${ratio}, UI shows ${postToolState?.ratio || 'none'}`);
-    }
-    if (postToolState?.quantity !== qty) {
-      settingsVerification.verified = false;
-      warnings.push(`Quantity read-back mismatch: requested ${qty}, UI shows ${postToolState?.quantity || 'none'}`);
-    }
 
     // Fill prompt (scaffolded) + READ BACK to verify it actually landed.
     await promptInput.click();
     await promptInput.fill(prompt);
     await page.waitForTimeout(500);
-    const filledText = await promptInput.textContent().catch(() => '')
-      || await promptInput.inputValue().catch(() => '');
-    const normalizedExpected = prompt.replace(/\s+/g, ' ').trim();
-    const normalizedActual = String(filledText).replace(/\s+/g, ' ').trim();
+    let filledText = await promptInput.inputValue().catch(() => '');
+    if (!filledText) {
+      filledText = await promptInput.evaluate(el => (el.innerText !== undefined ? el.innerText : el.textContent) || '').catch(() => '');
+    }
+    const normalizePrompt = (s) => String(s || '').replace(/[\r\n\t]+/g, ' ').replace(/[\u00a0\u2000-\u200b\s]+/g, ' ').trim();
+    const normalizedExpected = normalizePrompt(prompt);
+    const normalizedActual = normalizePrompt(filledText);
     if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
@@ -426,17 +479,61 @@ export async function handleGenerateVideo(args) {
     logger.info('Video generation setup complete — not clicking generate (paid feature)');
     await takeScreenshot(page, 'video-ready-to-generate');
 
-    // LIVE PATH: explicit paid click. Preconditions (fail closed):
-    // 1. confirm_generate === true (separate from auto_confirm, never defaulted)
-    // 2. model selected via tune panel + read back, or already showing
-    // 3. prompt read-back already passed above
-    if (args.confirm_generate === true) {
-      if (!attachVerified || Object.values(frameVerification).some(frame => !frame.verified)
-        || !settingsVerification.verified || mentionResults.failed.length || barFailed.length) {
-        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
-          'Video preparation is unverified (settings, uploads, frame slots or ingredients). No Generate click made.',
-          { frameVerification, settingsVerification });
+    const qc = {
+      prompt_scaffold: 'scene+action (+camera/style lines); optics in UI selectors',
+      prompt_warnings: warnings,
+      model_routing: `requested ${args.model || 'auto'} → ${model} (dynamic universe, from=${resolved.from})`,
+      capability: caps,
+      tool_state_before: preState,
+      ui_verified: uiResult?.verified || [],
+      ui_unverified: uiSkipped,
+      frames: { start_frame: startFrame, end_frame: endFrame, anchor_frame: anchorFrame, uploads: resolvedUploads, notes: frameNotes },
+      frame_verification: frameVerification,
+      ingredients_qc: 'plain/segmented bg preferred; no extra subjects in location/style refs; prompt names each ingredient',
+      shots: shotPlan,
+      output_dir: outputDir,
+    };
+
+    const blockers = [...settingsBlockers];
+    if (!attachVerified) {
+      blockers.push({
+        field: 'attachments',
+        code: 'ATTACHMENT_UNVERIFIED',
+        action: 'verify reference files upload and format',
+      });
+    }
+    for (const [slot, frame] of Object.entries(frameVerification)) {
+      if (frame && frame.verified !== true) {
+        blockers.push({
+          field: `frames.${slot}`,
+          code: 'FRAME_SLOT_UNVERIFIED',
+          requested: frame.requested,
+          slot_detected: frame.slot_detected,
+          action: `verify ${slot} slot attachment in Flow composer`,
+        });
       }
+    }
+    if (mentionResults.failed.length > 0) {
+      blockers.push({
+        field: 'ingredients',
+        code: 'INGREDIENTS_FAILED',
+        failed: mentionResults.failed,
+        action: 'use flow_list_mention_options to discover exact @names',
+      });
+    }
+
+    const preparationVerified = isVideoPreparationVerified({
+      settingsVerified: settingsVerification.verified,
+      attachVerified,
+      frames: frameVerification,
+      failedMentions: mentionResults.failed,
+      failedSettings: settingsBlockers.map(b => b.field),
+      blockers,
+    });
+    if (!preparationVerified) warnings.push('Preparation is unverified. Correct settings, reference uploads and slot assignments before generating.');
+
+    const sessionSubmission = getSessionScope()?.handlerSubmission;
+    if (args.confirm_generate === true && sessionSubmission) {
       assertUiCurrent(epoch);
 
       const pageHtml = await page.content().catch(() => '');
@@ -510,13 +607,12 @@ export async function handleGenerateVideo(args) {
         inputLocator: promptInput,
         refs: frameFiles,
         mentionNames,
-        liveAuthorization: await createLiveAuthorization({ page, confirmed: args.confirm_generate === true, maxCredits: args.max_credits }),
       });
 
       const submitted = await executeDurableSubmission({
         page,
         epoch,
-        opStore: createOperationStore(getFlowHome()),
+        opStore: sessionSubmission.opStore || createOperationStore(getFlowHome()),
         requestPayload,
         observedAccount,
         observedProjectId,
@@ -529,25 +625,6 @@ export async function handleGenerateVideo(args) {
       jobQueue.completeJob(job.id, submitted);
       return { ...submitted, jobId: job.id };
     }
-
-    const qc = {
-      prompt_scaffold: 'scene+action (+camera/style lines); optics in UI selectors',
-      prompt_warnings: warnings,
-      model_routing: `requested ${args.model || 'auto'} → ${model} (dynamic universe, from=${resolved.from})`,
-      capability: caps,
-      tool_state_before: preState,
-      ui_verified: uiResult?.verified || [],
-      ui_unverified: uiSkipped,
-      frames: { start_frame: startFrame, end_frame: endFrame, anchor_frame: anchorFrame, uploads: resolvedUploads, notes: frameNotes },
-      frame_verification: frameVerification,
-      ingredients_qc: 'plain/segmented bg preferred; no extra subjects in location/style refs; prompt names each ingredient',
-      shots: shotPlan,
-      output_dir: outputDir,
-    };
-
-    const preparationVerified = isVideoPreparationVerified({ settingsVerified: settingsVerification.verified,
-      attachVerified, frames: frameVerification, failedMentions: mentionResults.failed, failedSettings: barFailed });
-    if (!preparationVerified) warnings.push('Preparation is unverified. Correct settings, reference uploads and slot assignments before generating.');
 
     saveMetadata(job.id, {
       type: 'video',
@@ -591,6 +668,16 @@ export async function handleGenerateVideo(args) {
       shots_notice: (shotPlan && shotPlan.length > 0)
         ? 'Legacy shots[] parameter is plan-only metadata. Individual shot takes are not executed in this handler.'
         : null,
+      blockers,
+      diagnostics: {
+        requested: settingsVerification.requested,
+        actual: settingsVerification.actual,
+        verified: settingsVerification.verified,
+        blockers,
+        warnings,
+        attempts: barSets,
+        screenshot: await takeScreenshot(page, 'video-ready'),
+      },
       settings_verification: settingsVerification,
       qc_warnings: warnings,
       frame_notes: frameNotes,
@@ -604,6 +691,25 @@ export async function handleGenerateVideo(args) {
     assertUiCurrent(epoch);
     return jobQueue.getJob(job.id).result;
     }); // end withUiTransaction
+
+    if (prepared.status === 'submitted') {
+      return prepared;
+    }
+
+    if (args.confirm_generate === true) {
+      if (prepared.status === 'ready_for_confirmation') {
+        return await commitPreparedGeneration({
+          job_id: prepared.jobId,
+          max_credits: args.max_credits,
+          wait_ms: args.wait_ms || 2000,
+        });
+      }
+      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+        `Video preparation is unverified (${(prepared.blockers || []).map(b => b.message || b.field).join('; ') || 'unverified settings or attachments'}). No Generate click made.`,
+        { prepared });
+    }
+
+    return prepared;
   } catch (err) {
     try {
       await takeScreenshot(getPage(), 'generate-video-error');

@@ -62,12 +62,12 @@ export const schemas = {
   }).passthrough(),
 
   flow_generate_video: z.object({
-    prompt: nonEmpty('prompt').describe('Scene + action. Keep optics (lens/aperture/camera body) out — those are UI selectors.'),
+    prompt: nonEmpty('prompt').describe('Scene + action. Keep technical optics (focal length, aperture, lens specifications) out — those are UI selectors. Camera movement (dolly, orbit, tracking shot) and cinematic staging are supported in the prompt or camera parameter.'),
     // Model names are dynamic (flow_list_models refreshes from Flow UI at launch).
     // Handler resolves against the live universe; unknown names fail with the live list.
     model: z.string().trim().min(1).max(100).optional().describe('Video model name (see flow_list_models) or auto (= Omni 1.1 Flash cheap default). Veo Quality finals, Veo Fast/Lite tests (~20 credits). Quality blocks ingredients/extend.'),
     ratio: z.enum(['16:9', '9:16']).optional().describe('Video aspect ratio.'),
-    duration: z.union([z.enum(['4s', '6s', '8s', '10s']), z.number().int().min(1).max(30)]).optional().describe('Clip length. Ingredients require 8s.'),
+    duration: z.union([z.enum(['4s', '6s', '8s', '10s']), z.number().int().min(1).max(30)]).optional().describe('Clip length (4s, 6s, 8s, 10s). Ingredients to Video typically requires 8s depending on model capability.'),
     quality: z.enum(['360p', '720p']).optional().describe('Video resolution toggle in settings.'),
     camera: z.string().trim().max(300).optional().describe('Camera move in plain terms: push-in, pull-back, pan, tilt, orbit, tracking shot. Kept separate from subject motion.'),
     style: z.string().trim().max(300).optional().describe('Look/mood/lighting. Location/style refs should not contain extra subjects.'),
@@ -80,14 +80,14 @@ export const schemas = {
     }).passthrough()).max(6).optional().describe('Multi-shot plan (2-6). Each shot prepared in order; carry-forward anchor across shots.'),
     anchor_frame: z.string().max(1024).optional().describe('Strongest prior output frame carried as continuity anchor.'),
     reference_images: z.array(z.string().max(1024)).max(8).optional(),
-    ingredients: z.array(z.string().trim().min(1).max(200)).max(3).optional().describe('Project @names (max 3, 8s only). Use flow_list_mention_options first.'),
+    ingredients: z.array(z.string().trim().min(1).max(200)).max(3).optional().describe('Project @names (max 3, typically 8s for Ingredients mode). Use flow_list_mention_options first.'),
     use_character: z.string().trim().max(200).optional(),
     use_scene: z.string().trim().max(200).optional(),
     project_name: z.string().trim().max(200).optional(),
     campaign: z.string().trim().max(200).optional(),
     quantity: z.number().int().min(1).max(4).optional().describe('Variants for compare-pick-refine; test at low res, re-render winner.'),
     auto_confirm: z.boolean().optional().default(false),
-    confirm_generate: z.boolean().optional().default(false).describe('LIVE PAID CLICK. When true: verifies model chip, clicks Generate (spends credits), polls for the video. Default false = prepare-only.'),
+    confirm_generate: z.boolean().optional().default(false).describe('LIVE PAID CLICK via the shared server-side commit authority. When true: verifies full UI settings & attachments, quotes credits, and submits. Default false = prepare-only.'),
     max_credits: z.number().finite().min(0).max(1000).optional(),
     project_url: z.string().trim().max(2000).optional().describe('Direct Flow /project/ URL — wins over name/campaign matching.'),
   }).passthrough(),

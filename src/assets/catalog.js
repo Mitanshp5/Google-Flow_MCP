@@ -149,3 +149,53 @@ export function classifyDownloadError(err) {
   }
   return { code: 'DOWNLOAD_FAILED', message: msg, assetId: null, retryable: 'manual' };
 }
+
+// Content-addressed local-to-remote asset cache (Milestone 1)
+// Keyed strictly by account + projectId + local SHA-256.
+// Reuses known project assets across retries without re-uploading duplicate sheets.
+export function makeAssetHashKey({ account = '', projectId = '', hash = '' } = {}) {
+  const a = String(account || 'any').trim().toLowerCase();
+  const p = String(projectId || 'any').trim().toLowerCase();
+  const h = String(hash || '').trim().toLowerCase();
+  if (!h) return null;
+  return `${a}:${p}:${h}`;
+}
+
+export class AssetHashRegistry {
+  constructor() {
+    this.mappings = new Map();
+  }
+
+  register({ account, projectId, hash, assetId, title = '', byteSize = 0, mime = null }) {
+    if (!hash || !assetId || !projectId) {
+      return { ok: false, reason: 'Registration requires hash, assetId, and projectId' };
+    }
+    const key = makeAssetHashKey({ account, projectId, hash });
+    if (!key) return { ok: false, reason: 'Invalid hash key' };
+
+    const entry = {
+      account: account || null,
+      projectId,
+      hash,
+      assetId,
+      title: title || '',
+      byteSize,
+      mime,
+      observedAt: Date.now(),
+    };
+    this.mappings.set(key, entry);
+    return { ok: true, entry };
+  }
+
+  lookup({ account, projectId, hash }) {
+    const key = makeAssetHashKey({ account, projectId, hash });
+    if (!key) return null;
+    return this.mappings.get(key) || null;
+  }
+
+  clear() {
+    this.mappings.clear();
+  }
+}
+
+export const assetHashRegistry = new AssetHashRegistry();

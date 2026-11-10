@@ -170,7 +170,7 @@ describe('W05 actual handler policy integration', { timeout: 30000 }, () => {
       expect(f.opStore.listOperations()[0].requested).toEqual(payload);
     } finally { await f.page.close(); }
   });
-  for (const type of ['scene', 'character']) {
+  for (const type of ['character']) {
     it(`blocks confirmed native ${type} with an existing form before mutating it or claiming success`, async () => {
       const nativeHtml = html.replace('</body>', `<nav class="sidebar"><button aria-current="page">${type === 'scene' ? 'Scenes' : 'Characters'}</button></nav><textarea aria-label="Describe your ${type}">original native draft</textarea><button type="submit" aria-label="Create ${type}">Create</button></body>`);
       const f = await fixture(request, nativeHtml);

@@ -4,7 +4,7 @@
   "projectCreditCap": 50,
   "flowUrl": "https://flow.google.com/",
   "expectedAccount": null,
-  "_freeCharacterImages": "Optional account-owner-confirmed free image pricing for the character form, which has no credit label. Never applies to video or models outside this exact allowlist.",
+  "_freeCharacterImages": "Optional account-owner-confirmed free image pricing for the character form, which has no credit label. Example shape: {\"account\":\"you@example.com\",\"models\":[\"Nano Banana 2.1\"]}. Never applies to video or models outside this exact allowlist. Keep default null unless confirmed by account owner.",
   "freeCharacterImages": null,
   "chromeProfile": "Default",
   "chromeUserDataDir": "C:/Users/<username>/AppData/Local/Google/Chrome/User Data",

@@ -329,6 +329,7 @@ class JobQueue {
     this.abortReason = null;
     this.resetCount += 1;
     logger.info('Job queue has been forcibly reset.', { reason, leaseEpoch: this.leaseEpoch });
+    this.emit('reset', { reason, leaseEpoch: this.leaseEpoch });
   }
 
   getStatus(historyLimit = 5) {
