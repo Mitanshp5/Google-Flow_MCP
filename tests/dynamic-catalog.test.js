@@ -16,6 +16,7 @@ describe('dynamic model universe (nothing frozen)', () => {
   it('token-matches user spellings, refuses ambiguous ones', () => {
     // No frozen alias table: token subsets of the live universe resolve.
     expect(resolveModel('omni flash 1.1', 'video').name).toBe('Omni 1.1 Flash');
+    expect(resolveModel('omni flash 1.2', 'video').name).toBe('Omni 1.2 Flash');
     expect(resolveModel('VeO-3.1-faST', 'video').name).toBe('Veo 3.1 - Fast');
     expect(resolveModel('pro', 'image').name).toBe('Nano Banana Pro');
     // "nano" fits Nano Banana 2 AND Nano Banana Pro — ask, don't guess.

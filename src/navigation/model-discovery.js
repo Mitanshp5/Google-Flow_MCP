@@ -84,10 +84,7 @@ export async function discoverModels(page, opts = {}) {
       if (!name) return;
       if (!arr.some((m) => m.toLowerCase() === String(name).toLowerCase())) arr.push(name);
     };
-    const cleanModelName = (t) => String(t)
-      .replace(/^[\p{Emoji}\p{So}\u2000-\u2BFF]+\s*/u, '')
-      .replace(/arrow_drop_down|arrow_drop_up|apps_spark_2|volume_up/gi, '')
-      .trim().replace(/\s+/g, ' ');
+    const cleanModelName = (t) => decontaminateModelField(t);
 
     // Deliberately select Image then Video to enumerate both dropdowns.
     const modes = opts.modes && Array.isArray(opts.modes) && opts.modes.length > 0 ? opts.modes : ['Image', 'Video'];

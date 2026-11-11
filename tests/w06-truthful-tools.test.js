@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { w00LaunchBrowser } from './helpers/w00-dom.js';
 import { withPage } from '../src/browser/session-scope.js';
 import { handleFlowStatus } from '../src/tools/flow-status.js';
+import { handleFlowOpen } from '../src/tools/flow-open.js';
 import { handleDiscoverUi } from '../src/tools/discover-ui.js';
 import { handleOpenCharacters } from '../src/tools/open-characters.js';
 import { handleImportCharacter } from '../src/tools/import-character.js';
@@ -264,6 +265,82 @@ describe('W06 Truthful Feature Handlers — Arbitrary Tools', () => {
       await page.close();
     }
   }, 30000);
+
+  it('flow_use_tool waits for applet loading-overlay to clear and fills wide edge-clipped applet prompt box', async () => {
+    const page = await makePage({
+      '/tool/remix-1': `
+        <html>
+          <body>
+            <flow-applet-view-page style="display:block;position:relative">
+              <flow-applet-view-header><input class="editable-text-input" value="Remix of Simple Sketch" /></flow-applet-view-header>
+              <div class="loading-overlay" id="loader" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99">Loading...</div>
+              <flow-applet-prompt-box style="display:block">
+                <div class="applet-view-content" style="overflow:hidden;width:120px;height:60px">
+                  <div role="textbox" contenteditable="true" style="width:1600px;height:40px"></div>
+                </div>
+              </flow-applet-prompt-box>
+            </flow-applet-view-page>
+            <script>
+              setTimeout(() => { document.getElementById('loader').style.display = 'none'; }, 350);
+            </script>
+          </body>
+        </html>
+      `,
+      default: `
+        <html>
+          <body>
+            <nav class="sidebar"><a href="https://flow.google.com/project/w06-fixture-probe/tools">Tools</a></nav>
+            <a href="https://flow.google.com/project/w06-fixture-probe/tool/remix-1">Remix of Simple Sketch</a>
+          </body>
+        </html>
+      `,
+    }, PROJECT_URL);
+    try {
+      const res = await withPage(page, async () => handleUseFlowTool({
+        tool_name: 'Remix of Simple Sketch',
+        params: { Prompt: 'A neon cyberpunk alleyway in rain' },
+        project_url: PROJECT_URL,
+      }));
+      expect(res.status).toBe('tool_opened');
+      expect(res.unapplied_fields).toEqual([]);
+      const actualPrompt = await page.locator('flow-applet-prompt-box [role="textbox"]').textContent();
+      expect(actualPrompt).toBe('A neon cyberpunk alleyway in rain');
+    } finally {
+      await page.close();
+    }
+  }, 30000);
+
+  it('flow_open polls immediately up to default readiness ceiling when Flow shell hydrates asynchronously', async () => {
+    const page = await makePage(`
+      <html>
+        <body>
+          <div id="root"><p>Loading Google Flow...</p></div>
+          <script>
+            setTimeout(() => {
+              document.getElementById('root').innerHTML = \`
+                <nav class="sidebar"><mat-list-item>All media</mat-list-item></nav>
+                <button aria-label="Google Account: qa-tester@gmail.com">Q</button>
+                <textarea placeholder="Ask Flow to generate a video..."></textarea>
+                <button>New project</button>
+              \`;
+            }, 500);
+          </script>
+        </body>
+      </html>
+    `, PROJECT_URL);
+    try {
+      const t0 = Date.now();
+      const res = await withPage(page, async () => handleFlowOpen({ url: PROJECT_URL }));
+      const elapsed = Date.now() - t0;
+      expect(res.status).toBe('connected');
+      expect(res.app).toBe('ready');
+      expect(res.isLoggedIn).toBe(true);
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(6000);
+    } finally {
+      await page.close();
+    }
+  }, 20000);
 });
 
 describe('W06 Truthful Generation Handlers — Video and Image', () => {

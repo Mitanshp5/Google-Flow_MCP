@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { attachReferenceFiles } from '../src/browser/safe-actions.js';
+import { attachCharacterReferenceFiles } from '../src/browser/character-form.js';
 import { attachUploadedPickerAssets } from '../src/browser/upload.js';
 import { handleDownloadWithPage } from '../src/tools/download-latest.js';
 import { isVideoPreparationVerified } from '../src/tools/generate-video.js';
@@ -62,6 +63,44 @@ describe('live-derived Flow ad repairs (local browser fixtures, zero credits)', 
       expect(await page.evaluate(() => window.upscaled)).toBeUndefined();
     } finally { await page.close(); }
   });
+
+  it('attaches character reference via + Add ingredients picker (never standalone Upload) and accepts /asb/ chip URLs', async () => {
+    const page = await browser.newPage();
+    const file = path.join(dir, 'char-ref.png'); fs.writeFileSync(file, png);
+    const asbUrl = 'https://flow.google.com/asb/ANqvLOtestToken12345=s512-rw';
+    try {
+      await page.route('https://flow.google.com/asb/**', r => r.fulfill({ status: 200, contentType: 'image/png', body: png }));
+      await page.setContent(`<style>flow-add-menu-asset-item{display:block;padding:15px}</style>
+        <div role="textbox" aria-label="Describe your character…" contenteditable="true"></div>
+        <button type="button" aria-label="Add ingredients to the prompt box" onclick="document.querySelector('#picker').hidden=false">add</button>
+        <div id="picker" hidden>
+          <button type="button" onclick="document.querySelector('input').click()">upload Upload media</button>
+          <input type="file" hidden>
+          <div id="rows"></div>
+          <button type="button" id="add">Add to prompt</button>
+        </div>
+        <button type="button" onclick="window.standaloneUploadClicked=true">upload Upload</button>
+        <script>
+          document.querySelector('input').onchange = () => {
+            const name = document.querySelector('input').files[0].name;
+            document.querySelector('#rows').innerHTML = '<flow-add-menu-asset-item><span class="asset-title">' + name + '</span><img src="${asbUrl}"></flow-add-menu-asset-item>';
+          };
+          document.querySelector('#add').onclick = () => {
+            const host = document.createElement('flow-ingredient-chip');
+            host.className = 'reference-ingredient-chip';
+            host.innerHTML = '<flow-image-ingredient-chip><img class="chip-image" alt="Character ingredient image" src="${asbUrl}"></flow-image-ingredient-chip>';
+            document.body.appendChild(host);
+            document.querySelector('#picker').hidden = true;
+          };
+        </script>`);
+      const desc = page.locator('[aria-label*="Describe your character" i]').first();
+      const result = await attachCharacterReferenceFiles(page, desc, [file], { timeoutMs: 3000 });
+      expect(result.verified, JSON.stringify(result)).toBe(true);
+      expect(result.attached).toBe(1);
+      expect(result.acknowledged[0].assetId).toBe('asb:ANqvLOtestToken12345');
+      expect(await page.evaluate(() => window.standaloneUploadClicked)).toBeUndefined();
+    } finally { await page.close(); }
+  }, 15000);
 
   it('failed uploads, unknown slots, partial ingredients and settings never mean ready', () => {
     const base = {settingsVerified: true, attachVerified: true};

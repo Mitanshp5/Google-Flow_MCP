@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
 import { getFlowHome, get } from '../utils/config.js';
+import { decontaminateModelField } from '../browser/capabilities.js';
 
 // Fallback catalog used only when neither user config nor live discovery
 // has produced a list (first run, offline). Live discovery overwrites this.
@@ -12,7 +13,7 @@ import { getFlowHome, get } from '../utils/config.js';
 // never source:live.
 export const FALLBACK_CATALOG = {
   imageModels: ['Nano Banana Pro', 'Nano Banana 2 Lite', 'Nano Banana 2.1', 'Imagen 4'],
-  videoModels: ['Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite', 'Omni Flash', 'Omni 1.1 Flash'],
+  videoModels: ['Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Veo 3.1 - Lite', 'Omni Flash', 'Omni 1.1 Flash', 'Omni 1.2 Flash'],
   ratios: ['16:9', '4:3', '1:1', '3:4', '9:16'],
   videoRatios: ['16:9', '9:16'],
   durations: ['4s', '6s', '8s', '10s'],
@@ -44,7 +45,13 @@ export function loadCatalog() {
     const f = catalogPath();
     if (fs.existsSync(f)) {
       const data = JSON.parse(fs.readFileSync(f, 'utf-8'));
-      if (data && Array.isArray(data.videoModels)) return data;
+      if (data && Array.isArray(data.videoModels)) {
+        return {
+          ...data,
+          imageModels: uniq((data.imageModels || []).map(decontaminateModelField).filter(Boolean)),
+          videoModels: uniq(data.videoModels.map(decontaminateModelField).filter(Boolean)),
+        };
+      }
     }
   } catch (e) {
     logger.debug('Model catalog cache unreadable', { error: e.message });
@@ -197,10 +204,20 @@ export function resolveModel(requested, kind = 'video') {
   if (squashedHit) return { name: squashedHit, caps: capsFor(squashedHit), from: 'normalized' };
   const want = modelTokens(norm);
   if (want.length === 0) return null;
+  const dottedVersions = norm.match(/\b\d+\.\d+(?:\.\d+)?\b/g) || [];
   const scored = [];
   for (const candidate of pool) {
+    const candLower = String(candidate).toLowerCase();
+    if (!dottedVersions.every((v) => candLower.includes(v))) continue;
     const have = modelTokens(candidate);
-    if (want.every(t => have.includes(t))) {
+    const remaining = [...have];
+    const multisetOk = want.every((t) => {
+      const idx = remaining.indexOf(t);
+      if (idx === -1) return false;
+      remaining.splice(idx, 1);
+      return true;
+    });
+    if (multisetOk) {
       scored.push({ candidate, extra: have.length - want.length });
     }
   }

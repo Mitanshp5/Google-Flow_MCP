@@ -4,10 +4,24 @@ import { createHash } from 'crypto';
 import { get, getFlowHome } from './config.js';
 import { FlowError } from './errors.js';
 
+export const DEFAULT_PROJECT_CREDIT_CAP = 50;
+
 export function projectCreditCap() {
-  const cap = Number(get('projectCreditCap', 50));
+  const cap = Number(get('projectCreditCap', DEFAULT_PROJECT_CREDIT_CAP));
   if (!Number.isFinite(cap) || cap < 0) throw new FlowError('INVALID_PARAMS', 'projectCreditCap must be a finite non-negative number');
   return cap;
+}
+
+export function getReservedProjectCredits({ account, projectId, home = getFlowHome() } = {}) {
+  if (!account || !projectId) return 0;
+  const key = createHash('sha256').update(JSON.stringify([account, projectId])).digest('hex');
+  const file = path.join(home, 'project-credit-budgets', `${key}.json`);
+  if (!fs.existsSync(file)) return 0;
+  const ledger = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (ledger.version !== 1 || !Array.isArray(ledger.entries) || ledger.entries.some(e => !Number.isFinite(e.credits) || e.credits < 0)) {
+    throw new FlowError('MANUAL_VERIFICATION_REQUIRED', 'Invalid project credit ledger; no generation permitted');
+  }
+  return ledger.entries.reduce((sum, entry) => sum + entry.credits, 0);
 }
 
 // Persist the quote BEFORE the click. Unknown submissions remain charged to

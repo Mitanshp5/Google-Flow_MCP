@@ -11,6 +11,23 @@ export const ADD_INGREDIENTS_SELECTORS = [
   'button:has-text("Add ingredients")',
   '[aria-label*="Add ingredients" i]',
 ];
+export const ASSET_ID_PATTERNS = {
+  flowContentRe: '^https:\\/\\/flow-content\\.google\\/(?:image|video)\\/([a-f0-9-]+)(?:\\?|$)',
+  redirectRe: 'media\\.getMediaUrlRedirect\\?name=([a-f0-9-]+)',
+  asbRe: '^https:\\/\\/flow\\.google(?:\\.com)?\\/asb\\/([A-Za-z0-9_-]+)(?:=[A-Za-z0-9_-]+)?(?:\\?|$)',
+};
+
+export function extractFlowImageAssetId(src) {
+  const s = String(src || '');
+  const fc = s.match(new RegExp(ASSET_ID_PATTERNS.flowContentRe, 'i'));
+  if (fc) return fc[1];
+  const redir = s.match(new RegExp(ASSET_ID_PATTERNS.redirectRe, 'i'));
+  if (redir) return redir[1];
+  const asb = s.match(new RegExp(ASSET_ID_PATTERNS.asbRe, 'i'));
+  if (asb) return `asb:${asb[1]}`;
+  return null;
+}
+
 export const UPLOAD_MEDIA_SELECTORS = [
   'button:has-text("Upload media")',
   '[role="menuitem"]:has-text("Upload media")',
@@ -143,7 +160,7 @@ export async function openUploadPicker(page, {entryLocator} = {}) {
     : await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
   if (!addHit) return { fileChooser: null, error: 'Add ingredients entry not found' };
   try {
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(800);
   } catch { /* ignore */ }
   // Locate (but do not yet click) the Upload media entry.
   let uploadEl = null;
@@ -157,6 +174,19 @@ export async function openUploadPicker(page, {entryLocator} = {}) {
     } catch { /* next */ }
   }
   if (!uploadEl) return { fileChooser: null, error: 'Upload media entry not found after Add ingredients' };
+  // Snapshot already-present picker items before Upload media so repeat filenames stay unambiguous.
+  const pickerBaselineIds = typeof page.evaluate === 'function'
+    ? await page.evaluate((pats) => {
+        const rFc = new RegExp(pats.flowContentRe, 'i');
+        const rRedir = new RegExp(pats.redirectRe, 'i');
+        const rAsb = new RegExp(pats.asbRe, 'i');
+        return [...document.querySelectorAll('flow-add-menu-asset-item img, flow-image-tile img')].map((img) => {
+          const s = img.src || '';
+          const a = s.match(rAsb);
+          return s.match(rFc)?.[1] || s.match(rRedir)?.[1] || (a ? `asb:${a[1]}` : null);
+        }).filter(Boolean);
+      }, ASSET_ID_PATTERNS).catch(() => [])
+    : [];
   // Bounded wait registered BEFORE the click; cleanup on timeout.
   const chooserPromise = page.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null);
   try {
@@ -166,7 +196,7 @@ export async function openUploadPicker(page, {entryLocator} = {}) {
   }
   const chooser = await chooserPromise;
   if (!chooser) return { fileChooser: null, error: 'filechooser event not observed after Upload media' };
-  return { fileChooser: chooser };
+  return { fileChooser: chooser, pickerBaselineIds };
 }
 
 // Scoped acknowledgement read: upload chips rendered by the app near the
@@ -200,30 +230,191 @@ export async function readUploadAck(page, expectedNames = []) {
   }
 }
 
+const COMPOSER_CHIP_IMG_SELECTOR = 'flow-prompt-box flow-ingredient-chip img, flow-ingredient-chip.reference-ingredient-chip img, flow-image-ingredient-chip img, flow-ingredient-chip img';
+
+async function readComposerChipAssetIds(page) {
+  if (typeof page.evaluate !== 'function') return [];
+  return page.evaluate(({ sel, pats }) => {
+    const rFc = new RegExp(pats.flowContentRe, 'i');
+    const rRedir = new RegExp(pats.redirectRe, 'i');
+    const rAsb = new RegExp(pats.asbRe, 'i');
+    return [...document.querySelectorAll(sel)].map((img) => {
+      const s = img.src || '';
+      const a = s.match(rAsb);
+      return s.match(rFc)?.[1] || s.match(rRedir)?.[1] || (a ? `asb:${a[1]}` : null);
+    }).filter(Boolean);
+  }, { sel: COMPOSER_CHIP_IMG_SELECTOR, pats: ASSET_ID_PATTERNS }).catch(() => []);
+}
+
+async function waitForComposerChipId(page, { id = null, excludeIds = [], timeoutMs = 6000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const current = await readComposerChipAssetIds(page);
+    if (id) {
+      if (current.includes(id)) return id;
+    } else {
+      const fresh = current.find((cid) => !excludeIds.includes(cid));
+      if (fresh) return fresh;
+    }
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(300).catch(() => {});
+  } while (Date.now() < deadline);
+  return null;
+}
+
 // Current Flow picker exposes the upload filename and a stable CDN media ID.
 // Preserve that mapping, then verify the SAME ID in the composer, not merely
 // a matching library thumbnail or input.files (Flow removes its input).
-export async function attachUploadedPickerAssets(page, names, { timeoutMs = 45000, excludeAssetIds = [], slot = null, entryLocator = null } = {}) {
+// Note: In /character mode Flow clears the upload spinner to an icon placeholder
+// without populating <img> inside flow-add-menu-asset-item until clicked into the
+// composer; when that happens we still fail-closed unless a brand new CDN assetId
+// appears in the composer chip after selection.
+export async function attachUploadedPickerAssets(page, names, { timeoutMs = 90000, excludeAssetIds = [], slot = null, entryLocator = null } = {}) {
   const deadline = Date.now() + timeoutMs;
-  let identities = [];
+  const baselineChipIds = slot ? [] : await readComposerChipAssetIds(page);
+  let rawItems = [];
+  let placeholderReadyAt = null;
+  let resolvedMode = null; // 'id' | 'placeholder'
   do {
     if (await page.getByText('Rights to use this image', { exact: true }).isVisible().catch(() => false)) {
       return { verified: false, acknowledged: [], reason: 'rights_confirmation_required',
         message: 'Flow requires you to confirm rights to this image. Acknowledge the visible dialog, then prepare again; no generation was submitted.' };
     }
-    identities = await page.evaluate(() => [...document.querySelectorAll('flow-add-menu-asset-item, flow-image-tile')].map(el => {
-      const name = el.querySelector('.asset-title, .footer-title')?.textContent?.trim();
-      const src = el.querySelector('img')?.src || '';
-      const match = src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
-      return { name, title: name, assetId: match?.[1] || null };
-    }).filter((a, i, all) => all.findIndex(b => b.name === a.name && b.assetId === a.assetId) === i)).catch(() => []);
-    identities = identities.filter(a => !excludeAssetIds.includes(a.assetId));
-    if (names.every(name => identities.filter(a => a.name === name && a.assetId).length === 1)) break;
+    rawItems = await page.evaluate((pats) => {
+      const rFc = new RegExp(pats.flowContentRe, 'i');
+      const rRedir = new RegExp(pats.redirectRe, 'i');
+      const rAsb = new RegExp(pats.asbRe, 'i');
+      let menuIdx = 0;
+      return [...document.querySelectorAll('flow-add-menu-asset-item, flow-image-tile')].map((el) => {
+        const isMenuItem = el.tagName?.toLowerCase() === 'flow-add-menu-asset-item';
+        const menuIndex = isMenuItem ? menuIdx++ : -1;
+        const name = el.querySelector('.asset-title, .footer-title')?.textContent?.trim();
+        const rawText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        const hasSpinner = Boolean(el.querySelector('mat-spinner, [role="progressbar"]')) || /^Uploading/i.test(rawText);
+        const src = el.querySelector('img')?.src || '';
+        const a = src.match(rAsb);
+        const assetId = src.match(rFc)?.[1] || src.match(rRedir)?.[1] || (a ? `asb:${a[1]}` : null);
+        return { menuIndex, isMenuItem, name, title: name, assetId, hasSpinner };
+      });
+    }, ASSET_ID_PATTERNS).catch(() => []);
+
+    const filteredWithIds = rawItems
+      .filter((a) => !a.hasSpinner && a.assetId && !excludeAssetIds.includes(a.assetId))
+      .filter((a, i, all) => all.findIndex((b) => b.name === a.name && b.assetId === a.assetId) === i);
+    if (names.every((name) => filteredWithIds.filter((a) => a.name === name).length === 1)) {
+      resolvedMode = 'id';
+      break;
+    }
+
+    const anySpinner = rawItems.some((a) => a.hasSpinner && names.includes(a.name));
+    const allHaveCompletedOrPlaceholder = !anySpinner && names.every((name) =>
+      filteredWithIds.filter((a) => a.name === name).length === 1
+      || rawItems.some((a) => a.isMenuItem && a.name === name && !a.hasSpinner && !a.assetId)
+    );
+    if (allHaveCompletedOrPlaceholder) {
+      if (!placeholderReadyAt) placeholderReadyAt = Date.now();
+      // Give /project composer up to 4s for thumbnail hydration before selecting the completed placeholder.
+      if (timeoutMs >= 5000 && Date.now() - placeholderReadyAt >= 4000) {
+        resolvedMode = 'placeholder';
+        break;
+      }
+    } else {
+      placeholderReadyAt = null;
+    }
     await page.waitForTimeout(500);
   } while (Date.now() < deadline);
+
+  const reopen = async () => {
+    const clicked = entryLocator
+      ? await entryLocator.click({ timeout: 3000 }).then(() => true).catch(() => false)
+      : await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
+    if (!clicked) return false;
+    await page.locator('flow-add-menu-asset-item').first().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(350).catch(() => {});
+    return true;
+  };
+
+  const commitMenuItem = async (menuItem, { expectedId = null, excludeIds = [], name }) => {
+    if (!await menuItem.isVisible().catch(() => false) && !await reopen()) {
+      return { error: 'Cannot reopen ingredient picker', ack: null };
+    }
+    await menuItem.click();
+    const add = page.getByRole('button', { name: 'Add to prompt', exact: true });
+    await add.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {});
+    if (await add.isVisible()) await add.click({ timeout: 3000 });
+    if (slot) {
+      await page.locator('flow-base-prompt-box .frame-trigger').nth(slot === 'start' ? 0 : 1).locator('img').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+      const refs = await readComposerReferences(page);
+      const slotId = refs?.mode === 'frames' && refs.slotsObservable ? refs.slots[slot]?.assetId : null;
+      const valid = expectedId ? slotId === expectedId : (slotId && !excludeIds.includes(slotId));
+      return { error: null, ack: valid ? { name, title: name, assetId: slotId, slot } : null };
+    }
+    const chipId = expectedId
+      ? await waitForComposerChipId(page, { id: expectedId, timeoutMs: 5000 })
+      : await waitForComposerChipId(page, { excludeIds, timeoutMs: 6000 });
+    return { error: null, ack: chipId ? { name, title: name, assetId: chipId } : null };
+  };
+
+  if (resolvedMode === 'placeholder') {
+    const usedMenuIndices = new Set();
+    const seenChipIds = new Set([...baselineChipIds, ...excludeAssetIds]);
+    const acknowledged = [];
+    for (const name of names) {
+      const idMatches = rawItems
+        .filter((a) => !a.hasSpinner && a.assetId && !excludeAssetIds.includes(a.assetId) && a.name === name)
+        .filter((a, i, all) => all.findIndex((b) => b.name === a.name && b.assetId === a.assetId) === i);
+      if (idMatches.length === 1) {
+        const picked = idMatches[0];
+        if (!slot && (await readComposerChipAssetIds(page)).includes(picked.assetId)) {
+          acknowledged.push(picked);
+          continue;
+        }
+        const srcFrag = picked.assetId.startsWith('asb:') ? `/asb/${picked.assetId.slice(4)}` : `/image/${picked.assetId}`;
+        const item = page.locator('flow-add-menu-asset-item').filter({ has: page.locator(`img[src*="${srcFrag}"]`) }).first();
+        const committed = await commitMenuItem(item, { expectedId: picked.assetId, name });
+        if (committed.error) {
+          await closeOwnedOverlays(page, { preserveRights: true });
+          return { verified: false, acknowledged: [], reason: committed.error };
+        }
+        if (committed.ack) {
+          seenChipIds.add(committed.ack.assetId);
+          acknowledged.push(committed.ack);
+        }
+        continue;
+      }
+
+      const candidate = rawItems.find((a) =>
+        a.isMenuItem && a.menuIndex >= 0 && a.name === name && !a.hasSpinner && !a.assetId && !usedMenuIndices.has(a.menuIndex)
+      );
+      if (!candidate) {
+        await closeOwnedOverlays(page, { preserveRights: true });
+        return { verified: false, acknowledged: [], reason: `Upload still pending or ambiguous: ${name}` };
+      }
+      usedMenuIndices.add(candidate.menuIndex);
+      const committed = await commitMenuItem(page.locator('flow-add-menu-asset-item').nth(candidate.menuIndex), { excludeIds: [...seenChipIds], name });
+      if (committed.error) {
+        await closeOwnedOverlays(page, { preserveRights: true });
+        return { verified: false, acknowledged: [], reason: committed.error };
+      }
+      if (committed.ack) {
+        seenChipIds.add(committed.ack.assetId);
+        acknowledged.push(committed.ack);
+      }
+    }
+    await closeOwnedOverlays(page, { preserveRights: true });
+    return {
+      verified: acknowledged.length === names.length,
+      acknowledged,
+      reason: acknowledged.length === names.length ? null : 'Uploaded assets not all present in the composer',
+    };
+  }
+
+  const identities = rawItems
+    .filter((a) => !a.hasSpinner && (!a.assetId || !excludeAssetIds.includes(a.assetId)))
+    .filter((a, i, all) => all.findIndex((b) => b.name === a.name && b.assetId === a.assetId) === i);
   const selected = [];
   for (const name of names) {
-    const matches = identities.filter(a => a.name === name && a.assetId);
+    const matches = identities.filter((a) => a.name === name && a.assetId);
     if (matches.length !== 1) {
       await closeOwnedOverlays(page, { preserveRights: true });
       return { verified: false, acknowledged: [], reason: `Upload still pending or ambiguous: ${name}` };
@@ -231,20 +422,21 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
     selected.push(matches[0]);
   }
   for (let i = 0; i < selected.length; i++) {
-    const alreadyAttached = !slot && await page.locator('flow-prompt-box flow-ingredient-chip img').evaluateAll((imgs, id) => imgs.some(img => {
-      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
-      return match?.[1] === id;
-    }), selected[i].assetId);
+    const currentChipIds = await readComposerChipAssetIds(page);
+    const alreadyAttached = !slot && currentChipIds.includes(selected[i].assetId);
     if (alreadyAttached) continue;
     // Filename alone is ambiguous after retrying an upload. Select the newly
     // observed stable ID, not an older same-named asset in the picker.
-    const item = page.locator('flow-add-menu-asset-item').filter({ has: page.locator(`img[src*="/image/${selected[i].assetId}"]`) });
-    const reopen = async () => entryLocator
-      ? entryLocator.click({timeout:3000}).then(() => true).catch(() => false)
-      : clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
-    if (!await item.isVisible().catch(() => false) && !await reopen()) {
-      await closeOwnedOverlays(page, { preserveRights: true });
-      return { verified: false, acknowledged: [], reason: 'Cannot reopen ingredient picker' };
+    const srcFrag = selected[i].assetId.startsWith('asb:')
+      ? `/asb/${selected[i].assetId.slice(4)}`
+      : `/image/${selected[i].assetId}`;
+    const item = page.locator('flow-add-menu-asset-item').filter({ has: page.locator(`img[src*="${srcFrag}"]`) });
+    if (!await item.first().isVisible().catch(() => false)) {
+      if (!await reopen()) {
+        await closeOwnedOverlays(page, { preserveRights: true });
+        return { verified: false, acknowledged: [], reason: 'Cannot reopen ingredient picker' };
+      }
+      await item.first().waitFor({ state: 'visible', timeout: 4000 }).catch(() => {});
     }
     if (await item.count() !== 1) {
       await closeOwnedOverlays(page, { preserveRights: true });
@@ -267,16 +459,8 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 4500
       }
       continue;
     }
-    const chip = page.locator('flow-prompt-box flow-ingredient-chip img');
-    await page.waitForFunction(id => [...document.querySelectorAll('flow-prompt-box flow-ingredient-chip img')].some(img => {
-      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
-      return match?.[1] === id;
-    }), identity.assetId, {timeout:5000}).catch(()=>{});
-    const ids = await chip.evaluateAll(imgs => imgs.map(img => {
-      const match = img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i);
-      return match?.[1];
-    }));
-    if (ids.includes(identity.assetId)) acknowledged.push(identity);
+    const matchedId = await waitForComposerChipId(page, { id: identity.assetId, timeoutMs: 5000 });
+    if (matchedId) acknowledged.push(identity);
   }
   await closeOwnedOverlays(page, { preserveRights: true });
   return { verified: acknowledged.length === names.length, acknowledged,
@@ -324,9 +508,18 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
       projectId: opts.projectId ?? null,
     });
   }
-  const baselineIds = await page.evaluate(() => [...document.images].map(img =>
-    img.src.match(/^https:\/\/flow-content\.google\/image\/([a-f0-9-]+)(?:\?|$)/i)?.[1]
-  ).filter(Boolean)).catch(() => []);
+  const baselineIds = typeof page.evaluate === 'function'
+    ? await page.evaluate((pats) => {
+        const rFc = new RegExp(pats.flowContentRe, 'i');
+        const rRedir = new RegExp(pats.redirectRe, 'i');
+        const rAsb = new RegExp(pats.asbRe, 'i');
+        return [...document.images].map(img => {
+          const s = img.src || '';
+          const a = s.match(rAsb);
+          return s.match(rFc)?.[1] || s.match(rRedir)?.[1] || (a ? `asb:${a[1]}` : null);
+        }).filter(Boolean);
+      }, ASSET_ID_PATTERNS).catch(() => [])
+    : [];
   const opened = await openUploadPicker(page, opts);
   if (!opened.fileChooser) {
     await closeOwnedOverlays(page, { preserveRights: true });
@@ -355,7 +548,8 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
   void inputLocator;
   let acknowledged = await readUploadAck(page, requested);
   if (!acknowledged.length && await page.locator('flow-add-menu, flow-add-menu-asset-item').count().catch(() => 0)) {
-    const attached = await attachUploadedPickerAssets(page, requested, {...opts, excludeAssetIds: baselineIds});
+    const excludeIds = [...new Set([...(opts.excludeAssetIds || []), ...baselineIds, ...(opened.pickerBaselineIds || [])])];
+    const attached = await attachUploadedPickerAssets(page, requested, { ...opts, excludeAssetIds: excludeIds });
     acknowledged = attached.acknowledged;
     if (!attached.verified) return { requested, localRecords, inputAccepted, acknowledged,
       fileChooserSeen: true, verified: false, reason: attached.reason, notes: [attached.reason] };

@@ -4,7 +4,7 @@ import { takeScreenshot } from '../utils/screenshots.js';
 import { getPage } from './connect.js';
 import { getSelectors } from '../utils/selectors.js';
 import { uploadReferences } from './upload.js';
-import { decontaminateModelField } from './capabilities.js';
+import { decontaminateModelField, ICON_LIGATURES, MODEL_DEPRECATION_BODY } from './capabilities.js';
 
 function actionDelay() {
   return get('actionDelayMs', 800);
@@ -588,17 +588,23 @@ export async function setPromptBarModel(page, model) {
       let clicked = null;
       for (let i = 0; i < 16 && !clicked; i++) {
         if (i > 0) await page.waitForTimeout(500);
-        clicked = await page.evaluate((wantLower) => {
+        clicked = await page.evaluate(({ wantLower, icons, depBody }) => {
           const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+          const iconRe = new RegExp(`(?:${icons.join('|')}|crop_\\d+_\\d+|crop_square)`, 'gi');
+          const depRe = new RegExp(`${depBody}\\s*$`, 'iu');
           for (const pane of document.querySelectorAll('.cdk-overlay-pane')) {
             const r = pane.getBoundingClientRect();
             if (r.width === 0 && r.height === 0) continue;
             // Model options are FLOW-MENU-ITEM custom elements (mat-menu).
             for (const b of pane.querySelectorAll('flow-menu-item, button, a, [role="option"], [role="menuitem"], li, [mat-menu-item]')) {
               const t = norm(b.innerText || b.textContent);
-               const label = t.replace(/arrow_drop_down|arrow_drop_up|apps_spark_2|volume_up|tune|settings_2/g, ' ')
-                 .replace(/^[^a-z0-9]+/u, '').replace(/\s+/g, ' ').trim();
-               if (label !== wantLower || b.matches('[disabled], [aria-disabled="true"]')) continue;
+              const label = t.replace(iconRe, ' ')
+                .replace(/^[^a-z0-9]+/u, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .replace(depRe, '')
+                .trim();
+              if (label !== wantLower || b.matches('[disabled], [aria-disabled="true"]')) continue;
               const cls = (b.className?.baseVal ?? b.className ?? '').toString();
               if (/menu-trigger/.test(cls)) continue; // collapsed row, not an option
               const br = b.getBoundingClientRect();
@@ -608,7 +614,7 @@ export async function setPromptBarModel(page, model) {
             }
           }
           return null;
-        }, want.toLowerCase()).catch(() => null);
+        }, { wantLower: want.toLowerCase(), icons: ICON_LIGATURES, depBody: MODEL_DEPRECATION_BODY }).catch(() => null);
       }
       logger.info('Model option DOM click', { want, clicked });
       await page.waitForTimeout(1500);
@@ -796,13 +802,20 @@ export async function readAuthoritativeSettings(page) {
   const opened = await openBarSettings(page);
   if (opened.panel) {
     try {
-      const panelInfo = await opened.panel.evaluate(() => {
+      const panelInfo = await opened.panel.evaluate((rootEl) => {
         const out = { model: null, mode: null, ratio: null, quality: null, duration: null, quantity: null };
-        const modelBtn = document.querySelector('.mat-mdc-menu-panel button.mat-mdc-menu-trigger, button.mat-mdc-menu-trigger, [aria-label*="model" i]');
+        const scope = rootEl || document;
+        const buttons = Array.from(scope.querySelectorAll('button, [role="tab"]'));
+        const isIconOnly = (txt) => /^\s*(?:more_vert|more_horiz|close|tune|settings_2)?\s*$/i.test(txt);
+        const modelBtn = Array.from(scope.querySelectorAll('button.mat-mdc-menu-trigger, [aria-label*="model" i]'))
+          .find((b) => !isIconOnly((b.innerText || b.textContent || '').trim()))
+          || buttons.find((b) => /nano|banana|imagen|veo|omni/i.test((b.innerText || b.textContent || '').trim()));
         if (modelBtn) {
-          out.model = (modelBtn.innerText || modelBtn.textContent || '').trim();
+          const txt = (modelBtn.innerText || modelBtn.textContent || '').trim();
+          if (txt && !isIconOnly(txt)) {
+            out.model = txt;
+          }
         }
-        const buttons = Array.from(document.querySelectorAll('.cdk-overlay-pane button, [role="dialog"] button, [role="dialog"] [role="tab"]'));
         for (const b of buttons) {
           const txt = (b.innerText || b.textContent || '').trim();
           const isSelected = b.getAttribute('aria-pressed') === 'true'
@@ -827,8 +840,8 @@ export async function readAuthoritativeSettings(page) {
 
       if (panelInfo) {
         if (panelInfo.model) {
-          const { decontaminateModelField } = await import('./capabilities.js');
-          result.model = decontaminateModelField(panelInfo.model);
+          const cleanModel = decontaminateModelField(panelInfo.model);
+          if (cleanModel) result.model = cleanModel;
         }
         if (panelInfo.mode) result.mode = panelInfo.mode;
         if (panelInfo.ratio) result.ratio = panelInfo.ratio;
@@ -1386,7 +1399,9 @@ export async function configureGenerationUI(options = {}) {
         if (!(await btn.isVisible().catch(() => false))) continue;
         const txt = ((await btn.textContent().catch(() => '')) || '').trim().toLowerCase();
         const hasPopup = await btn.getAttribute('aria-haspopup').catch(() => null);
-        const looksLikeModel = MODEL_TOKENS.some(t => txt.includes(t)) || txt.includes('arrow_drop_down');
+        const looksLikeModel = MODEL_TOKENS.some(t => txt.includes(t))
+          && !txt.includes('more_vert')
+          && !txt.includes('more_horiz');
         if (looksLikeModel && (txt.includes('arrow_drop_down') || hasPopup)) {
           dropdownBtn = btn;
           break;
@@ -1394,11 +1409,11 @@ export async function configureGenerationUI(options = {}) {
       }
 
       if (dropdownBtn) {
-        const currentModelName = (await dropdownBtn.textContent().catch(() => ''))
-          .replace('arrow_drop_down', '').trim().toLowerCase();
-        const targetModel = model.toLowerCase().trim();
+        const currentModelName = decontaminateModelField(await dropdownBtn.textContent().catch(() => ''))
+          .toLowerCase();
+        const targetModel = decontaminateModelField(model).toLowerCase();
         // Exact (normalized) match — no substring false-positives ("Veo" matching any Veo).
-        const same = currentModelName.replace(/\s+/g, ' ') === targetModel.replace(/\s+/g, ' ');
+        const same = currentModelName === targetModel;
 
         if (!same) {
           logger.info(`Changing model from "${currentModelName}" to "${model}"`);
@@ -1406,8 +1421,12 @@ export async function configureGenerationUI(options = {}) {
           await dropdownBtn.click();
           await page.waitForTimeout(1000);
 
-          const modelOption = page.locator('[role="option"], [role="menuitem"], li, button')
-            .filter({ hasText: new RegExp(`^${escapeRegExp(model)}$`, 'i') }).first();
+          const optPattern = new RegExp(
+            `^\\s*(?:[\\p{Emoji}\\p{So}\\u2000-\\u2BFF]+\\s*)?(?:${ICON_LIGATURES.join('|')})?\\s*${escapeRegExp(model)}(?:${MODEL_DEPRECATION_BODY})?\\s*$`,
+            'iu'
+          );
+          const modelOption = page.locator('[role="option"], [role="menuitem"], flow-menu-item, li, button')
+            .filter({ hasText: optPattern }).first();
           if (await modelOption.isVisible().catch(() => false)) {
             await modelOption.click();
             await page.waitForTimeout(1000);

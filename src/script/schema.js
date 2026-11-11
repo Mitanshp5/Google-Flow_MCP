@@ -1,6 +1,7 @@
 import { FlowError } from '../utils/errors.js';
 import { canonicalStringify } from '../domain/contracts.js';
 import { buildStoryDag } from './dag.js';
+import { resolveAllocatedBudgetConfig } from './budget.js';
 
 export const SAFE_STORY_ID_RE = Object.freeze(/^[a-zA-Z0-9_-]{1,64}$/);
 export const VALID_ASPECT_RATIOS = Object.freeze(['16:9', '9:16', '1:1', '4:3', '3:4']);
@@ -173,18 +174,20 @@ export function calculateTimelineDuration(shots = [], fpsInput = 24) {
  * - Shot cards with trim ranges, transition handles, and expected continuity states
  * - Feasibility math: usableFrames + handles <= plannedSourceFrames
  */
-export function validateStoryInput({
-  storyId = null,
-  brief,
-  binding = {},
-  policy = {},
-  governance = {},
-  bible,
-  scenes = [],
-  shots = [],
-  accountKey = null,
-  projectId = null,
-} = {}) {
+export function validateStoryInput(rawInput = {}) {
+  const safeInput = rawInput ?? {};
+  const {
+    storyId = null,
+    brief,
+    binding = {},
+    policy = {},
+    governance = {},
+    bible,
+    scenes = [],
+    shots = [],
+    accountKey = null,
+    projectId = null,
+  } = safeInput;
   // Validate storyId if passed
   if (storyId !== null && storyId !== undefined) {
     if (typeof storyId !== 'string' || !storyId.trim() || !SAFE_STORY_ID_RE.test(storyId.trim())) {
@@ -636,8 +639,9 @@ export function validateStoryInput({
     }
   }
 
-  // Calculate timeline
+  // Calculate timeline & resolve allocated budget (defaults to 50 credits unless explicitly specified)
   const timeline = calculateTimelineDuration(standardizedShots, fps);
+  const budgetConfig = resolveAllocatedBudgetConfig(safeInput);
 
   return {
     binding: {
@@ -645,6 +649,7 @@ export function validateStoryInput({
       projectId: resolvedProjectId,
     },
     policy: resolvedPolicy,
+    budgetConfig,
     governance: resolvedGovernance,
     brief: {
       ...brief,

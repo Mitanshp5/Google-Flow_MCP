@@ -48,6 +48,9 @@ export async function launchKiaraProfile(headless = false, opts = {}) {
     setContext(ctx);
     setConnected(true);
     setPage(newPage);
+    if (!headless) {
+      await newPage.bringToFront().catch(() => {});
+    }
     return { browser: existing, context: ctx, page: newPage };
   } catch (error) {
     if (error.code === 'STALE_EPOCH') throw error;
@@ -84,7 +87,23 @@ export async function navigateToFlow(page, toolPage) {
   await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   // Wait for app shell instead of networkidle (Flow SPA streams and never idles).
   await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(2000);
+  // Wait for Angular/Flow UI hydration (landing controls, project links, composer, or sign-in)
+  // rather than a fixed 2s sleep so cold boots clear the splash screen cleanly.
+  await page.waitForFunction(() => {
+    const u = location.href || '';
+    if (u.includes('accounts.google.com')) return true;
+    const controls = [...document.querySelectorAll('button, a, flow-base-prompt-box, textarea, [contenteditable="true"]')];
+    return controls.some((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA' || tag === 'FLOW-BASE-PROMPT-BOX' || el.hasAttribute('contenteditable')) return true;
+      const t = (el.innerText || el.getAttribute('aria-label') || '').trim();
+      const href = el.getAttribute('href') || '';
+      return /new project|sign in|get started/i.test(t) || /\/project\//.test(href);
+    });
+  }, null, { timeout: 12000 }).catch(() => {});
+  await page.waitForTimeout(500).catch(() => {});
 
   const currentUrl = page.url();
   logger.info('Flow page loaded', { url: currentUrl.substring(0, 100) });

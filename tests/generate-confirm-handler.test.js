@@ -37,7 +37,16 @@ function makeFakePage({ baseline, after, costText = '1 credits total', blocked =
   let snapshotCalls = 0;
   return {
     content: async () => '',
-    getByText: () => ({ first: () => ({ isVisible: async () => blocked || (blockedAfterClick && globalThis.__confirmClicked) }) }),
+    getByText: (pattern) => ({
+      first: () => ({
+        isVisible: async () => {
+          const active = blocked || (blockedAfterClick && globalThis.__confirmClicked);
+          if (!active) return false;
+          if (pattern instanceof RegExp) return pattern.test('Not enough credits');
+          return true;
+        },
+      }),
+    }),
     evaluate: async (fn) => {
       const src = String(typeof fn === 'function' ? fn.toString() : fn);
       if (src.includes('credits')) return costText;
@@ -120,13 +129,29 @@ describe('handleGenerateConfirm short-wait handler', () => {
     expect(jobQueue.getStatus(5).hasActiveJob).toBe(false);
   }, 30000);
 
-  it('refuses an unknown quote instead of treating it as zero credits', async () => {
-    const prep = jobQueue.createJob('image_generation', {});
+  it('refuses an unknown quote on video generation instead of treating it as zero credits', async () => {
+    const prep = jobQueue.createJob('video_generation', {});
     jobQueue.startJob(prep.id);
-    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'image'});
+    jobQueue.completeJob(prep.id, {status: 'ready_for_confirmation', type: 'video'});
     globalThis.__confirmFakePage = makeFakePage({baseline: {}, after: {}, costText: null});
     await expect(handleGenerateConfirm({job_id: prep.id})).rejects.toThrow(/unknown quote is not zero/);
     expect(globalThis.__confirmClicked).toBe(false);
+  });
+
+  it('never blocks free image or character generation for unknown quotes, max_credits=0, or insufficient-credit warnings', async () => {
+    const imgPrep = jobQueue.createJob('image_generation', { prompt: 'free image' });
+    jobQueue.startJob(imgPrep.id);
+    jobQueue.completeJob(imgPrep.id, { status: 'ready_for_confirmation', type: 'image', model_used: 'Nano Banana 2', quantity: 1 });
+    globalThis.__confirmFakePage = makeFakePage({
+      baseline: { count: 1, ids: ['old'] },
+      after: { count: 2, ids: ['old', 'new-img'] },
+      costText: null,
+      blocked: true,
+    });
+    const imgResult = await handleGenerateConfirm({ job_id: imgPrep.id, max_credits: 0, wait_ms: 1000 });
+    expect(globalThis.__confirmClicked).toBe(true);
+    expect(imgResult.status).toBe('output_detected');
+    expect(imgResult.quote).toMatchObject({ total: 0, state: 'free' });
   });
 
   it('does not click when Flow already reports insufficient credits', async () => {

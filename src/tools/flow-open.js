@@ -15,7 +15,8 @@ import {
 export async function handleFlowOpen(args) {
   const rawUrl = args.url || get('flowUrl', 'https://flow.google.com/');
   const url = assertFlowUrl(rawUrl);
-  const waitFor = clampWaitFor(args.waitFor, 3000, 15000);
+  const explicitWait = args.waitFor !== undefined;
+  const waitFor = clampWaitFor(args.waitFor, 12000, 15000);
   const page = getPage();
 
   logger.info('Opening Flow page', { url: url.substring(0, 80) });
@@ -26,17 +27,18 @@ export async function handleFlowOpen(args) {
     return await withUiTransaction(async () => {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForSelector('body', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(waitFor);
 
       let currentUrl, pageTitle, pageContent, html, appState;
-      const readinessDeadline = Date.now() + waitFor;
+      const readinessDeadline = Date.now() + (explicitWait ? waitFor : 12000);
       for (;;) {
         currentUrl = page.url();
         pageTitle = await page.title().catch(() => '');
         pageContent = await page.textContent('body').catch(() => '') || '';
         html = typeof page.content === 'function' ? await page.content().catch(() => '') : '';
         appState = classifyAppState({url:currentUrl,title:pageTitle,bodyText:pageContent,html});
-        if (['ready','auth_needed','error_404'].includes(appState.app) || Date.now() >= readinessDeadline) break;
+        const readyNow = ['auth_needed', 'error_404'].includes(appState.app)
+          || (appState.app === 'ready' && (shellReadyFromHtml(html) || ['flow-character-editor', 'flow-tools-gallery'].includes(appState.reason)));
+        if (readyNow || Date.now() >= readinessDeadline) break;
         await page.waitForTimeout(Math.min(250, Math.max(1, readinessDeadline - Date.now())));
       }
       await takeScreenshot(page, 'flow-opened').catch(() => {});

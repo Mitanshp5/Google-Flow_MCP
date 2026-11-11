@@ -302,6 +302,9 @@ export async function launchChromeDirect(options = {}) {
     isConnected = true;
     global.__chromeTempDir = tempDir;
     wireDisconnectHandler();
+    if (!headless) {
+      await acquiredPage.bringToFront().catch(() => {});
+    }
 
     let webdriver = 'unknown';
     try {

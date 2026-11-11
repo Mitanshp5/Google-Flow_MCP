@@ -133,6 +133,37 @@ export function normalizeDuration(raw, allowed = ['4s', '6s', '8s', '10s']) {
   return allowed.includes(dur) ? dur : null;
 }
 
+export function normalizePromptText(text) {
+  return String(text || '')
+    .replace(/[\u200b-\u200d\ufeff]/g, '')
+    .replace(/[\r\n\t\u00a0\u2000-\u200a\s]+/g, ' ')
+    .trim();
+}
+
+export async function readEditorText(locator) {
+  if (!locator) return '';
+  if (typeof locator.inputValue === 'function') {
+    const inputVal = await locator.inputValue().catch(() => null);
+    if (typeof inputVal === 'string') return inputVal;
+  }
+  if (typeof locator.evaluate === 'function') {
+    // Rich editors (Slate/ProseMirror contenteditable) render paragraphs as block
+    // nodes without inter-node spaces; innerText preserves line breaks while
+    // textContent concatenates adjacent blocks directly together.
+    const evaluated = await locator.evaluate((el) => {
+      if (!el) return '';
+      if (typeof el.value === 'string') return el.value;
+      const inner = typeof el.innerText === 'string' ? el.innerText : '';
+      return inner !== '' ? inner : (el.textContent || '');
+    }).catch(() => null);
+    if (typeof evaluated === 'string') return evaluated;
+  }
+  if (typeof locator.textContent === 'function') {
+    return (await locator.textContent().catch(() => '')) || '';
+  }
+  return '';
+}
+
 export function cameraMoves() {
   return [...CAMERA_MOVES];
 }

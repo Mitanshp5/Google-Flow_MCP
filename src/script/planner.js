@@ -15,6 +15,8 @@ import {
   STORY_SNAPSHOT_VERSION,
 } from './store.js';
 import { buildStoryDag, extractSceneChains } from './dag.js';
+import { evaluateStoryBudget } from './budget.js';
+import { getReservedProjectCredits } from '../utils/project-credit-budget.js';
 import {
   getRuntimeRoot,
   atomicWriteJson,
@@ -24,13 +26,44 @@ import {
 
 export const VALID_DECISIONS = Object.freeze(['approve', 'reject', 'revise', 'reset']);
 
+function safeReadSpentCredits(story) {
+  try {
+    return getReservedProjectCredits({
+      account: story?.binding?.accountKey,
+      projectId: story?.binding?.projectId,
+    });
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Computes actionable next planning steps based on current DAG and node statuses.
  * Invariant: Planning actions do not issue spendable approvals or enable generation.
  */
-function computeNextActions(story, dag) {
+function computeNextActions(story, dag, budget = null) {
   const actions = [];
   const nodeStates = story.nodeStates || {};
+
+  if (budget?.requiresBudgetApproval) {
+    actions.push({
+      action: 'confirm_story_budget',
+      priority: 'critical',
+      requiredCredits: budget.estimatedRequiredCredits,
+      allocatedCredits: budget.allocatedCredits,
+      shortfallCredits: budget.shortfallCredits,
+      title: budget.question,
+    });
+  } else if (budget?.allocationSource === 'default_50') {
+    actions.push({
+      action: 'confirm_story_budget',
+      priority: 'medium',
+      requiredCredits: budget.estimatedRequiredCredits,
+      allocatedCredits: budget.allocatedCredits,
+      shortfallCredits: 0,
+      title: budget.question,
+    });
+  }
 
   // 1. Entities needing review / approval
   for (const [nodeId, node] of dag.nodes) {
@@ -99,7 +132,8 @@ function computeNextActions(story, dag) {
 export function createStory(input, { root = getRuntimeRoot() } = {}) {
   const saved = saveNewStory(input, { root });
   const dag = buildStoryDag(saved);
-  const nextActions = computeNextActions(saved, dag);
+  const budget = evaluateStoryBudget(saved, { spentCredits: safeReadSpentCredits(saved) });
+  const nextActions = computeNextActions(saved, dag, budget);
 
   return {
     storyId: saved.storyId,
@@ -112,6 +146,10 @@ export function createStory(input, { root = getRuntimeRoot() } = {}) {
     timeline: saved.timeline,
     binding: saved.binding,
     policy: saved.policy,
+    budget,
+    allocatedBudget: budget.allocatedCredits,
+    estimatedRequiredCredits: budget.estimatedRequiredCredits,
+    budgetQuestion: budget.question,
     governance: saved.governance,
     nextActions,
     nodeStates: saved.nodeStates,
@@ -123,14 +161,18 @@ export function createStory(input, { root = getRuntimeRoot() } = {}) {
 /**
  * Updates a story under CAS revision guard, computing semantic invalidations.
  */
-export function updateStory({ storyId, expectedRevision, patch = {}, accountKey, projectId }, { root = getRuntimeRoot() } = {}) {
+export function updateStory({ storyId, expectedRevision, patch = {}, allocatedBudget, accountKey, projectId }, { root = getRuntimeRoot() } = {}) {
   const patchWithBindings = { ...patch };
+  if (allocatedBudget !== undefined && patchWithBindings.allocatedBudget === undefined) {
+    patchWithBindings.allocatedBudget = allocatedBudget;
+  }
   if (accountKey !== undefined) patchWithBindings.accountKey = accountKey;
   if (projectId !== undefined) patchWithBindings.projectId = projectId;
 
   const { story, invalidations } = updateStoryRecord(storyId, expectedRevision, patchWithBindings, { root });
   const dag = buildStoryDag(story);
-  const nextActions = computeNextActions(story, dag);
+  const budget = evaluateStoryBudget(story, { spentCredits: safeReadSpentCredits(story) });
+  const nextActions = computeNextActions(story, dag, budget);
 
   return {
     storyId: story.storyId,
@@ -140,6 +182,10 @@ export function updateStory({ storyId, expectedRevision, patch = {}, accountKey,
     story,
     script: story,
     invalidations,
+    budget,
+    allocatedBudget: budget.allocatedCredits,
+    estimatedRequiredCredits: budget.estimatedRequiredCredits,
+    budgetQuestion: budget.question,
     nextActions,
     nodeStates: story.nodeStates,
     canSpend: false,
@@ -213,7 +259,8 @@ export function getStoryStatus({ storyId, accountKey = null, projectId = null },
   }
 
   const sceneChains = extractSceneChains(story);
-  const nextActions = computeNextActions(story, dag);
+  const budget = evaluateStoryBudget(story, { spentCredits: safeReadSpentCredits(story) });
+  const nextActions = computeNextActions(story, dag, budget);
 
   return {
     storyId: story.storyId,
@@ -224,6 +271,10 @@ export function getStoryStatus({ storyId, accountKey = null, projectId = null },
     timeline: story.timeline,
     binding: story.binding,
     policy: story.policy,
+    budget,
+    allocatedBudget: budget.allocatedCredits,
+    estimatedRequiredCredits: budget.estimatedRequiredCredits,
+    budgetQuestion: budget.question,
     governance: story.governance,
     nodeSummary: summary,
     shotsSummary,
@@ -369,6 +420,7 @@ export function reviewStoryNode(
       updatedAt: now,
       binding: currentSnapshot.binding,
       policy: currentSnapshot.policy,
+      ...(currentSnapshot.budgetConfig !== undefined ? { budgetConfig: currentSnapshot.budgetConfig } : {}),
       governance: currentSnapshot.governance,
       brief: currentSnapshot.brief,
       bible: currentSnapshot.bible,

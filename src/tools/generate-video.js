@@ -7,7 +7,7 @@ import { detectPageElements, configureGenerationUI, configurePromptBar, ensureMa
 import { saveMetadata, getOutputDir } from '../utils/file-manager.js';
 import { ensureProjectInContext, navigateToSidebar, extractProjectId } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
-import { buildVideoPrompt, checkPromptContradictions, normalizeDuration } from '../utils/prompt.js';
+import { buildVideoPrompt, checkPromptContradictions, normalizeDuration, normalizePromptText, readEditorText } from '../utils/prompt.js';
 import { resolveSafePath } from '../utils/sanitize.js';
 import { getSelectors } from '../utils/selectors.js';
 import { get } from '../utils/config.js';
@@ -23,6 +23,9 @@ import { buildHandlerSubmissionContext } from '../domain/handler-submission-cont
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { createOperationStore } from '../domain/operations.js';
 import { getFlowHome } from '../utils/config.js';
+import { getStory, findStoryForProject } from '../script/store.js';
+import { evaluateStoryBudget } from '../script/budget.js';
+import { getReservedProjectCredits } from '../utils/project-credit-budget.js';
 import {
   assertAccountActive,
   getAccountCooldown,
@@ -144,6 +147,7 @@ export async function handleGenerateVideo(args) {
     shots: Array.isArray(args.shots) ? args.shots : null,
     project_name: args.project_name,
     campaign: args.campaign,
+    scriptId: args.scriptId ?? args.storyId ?? null,
   });
 
   try {
@@ -412,13 +416,9 @@ export async function handleGenerateVideo(args) {
     await promptInput.click();
     await promptInput.fill(prompt);
     await page.waitForTimeout(500);
-    let filledText = await promptInput.inputValue().catch(() => '');
-    if (!filledText) {
-      filledText = await promptInput.evaluate(el => (el.innerText !== undefined ? el.innerText : el.textContent) || '').catch(() => '');
-    }
-    const normalizePrompt = (s) => String(s || '').replace(/[\r\n\t]+/g, ' ').replace(/[\u00a0\u2000-\u200b\s]+/g, ' ').trim();
-    const normalizedExpected = normalizePrompt(prompt);
-    const normalizedActual = normalizePrompt(filledText);
+    const filledText = await readEditorText(promptInput);
+    const normalizedExpected = normalizePromptText(prompt);
+    const normalizedActual = normalizePromptText(filledText);
     if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
@@ -726,10 +726,33 @@ export async function handleGenerateVideo(args) {
       warnings.push(`Account "${finalCooldown.accountKey}" is in safety cooldown for ${finalCooldown.remainingSec}s (reason: ${finalCooldown.reason}). Paid submission is blocked until cooldown expires.`);
     }
 
+    const explicitScriptId = args.scriptId ?? args.storyId ?? null;
+    const currentProjectId = extractProjectId(page.url());
+    let storyBudget = null;
+    try {
+      const boundStory = explicitScriptId
+        ? getStory(explicitScriptId)
+        : findStoryForProject({ projectId: currentProjectId, accountKey: observedFinalAccount });
+      if (boundStory) {
+        const spent = getReservedProjectCredits({
+          account: boundStory.binding?.accountKey || observedFinalAccount,
+          projectId: currentProjectId || boundStory.binding?.projectId,
+        });
+        storyBudget = evaluateStoryBudget(boundStory, { spentCredits: spent });
+        if (storyBudget.exceedsAllocatedBudget) {
+          warnings.push(storyBudget.question);
+        }
+      }
+    } catch (e) {
+      if (explicitScriptId) throw e;
+    }
+
     jobQueue.completeJob(job.id, {
       status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
       jobId: job.id,
+      ...(explicitScriptId ? { scriptId: explicitScriptId } : {}),
+      ...(storyBudget ? { storyBudget } : {}),
       account: observedFinalAccount,
       model_used: model,
       ratio,
@@ -783,6 +806,7 @@ export async function handleGenerateVideo(args) {
           job_id: prepared.jobId,
           max_credits: args.max_credits,
           wait_ms: args.wait_ms || 2000,
+          scriptId: prepared.scriptId || args.scriptId || args.storyId,
         });
       }
       throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,

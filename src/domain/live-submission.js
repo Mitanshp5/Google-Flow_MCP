@@ -313,8 +313,10 @@ export async function createLiveAuthorization({ page, confirmed, maxCredits = pr
         throw new FlowError('GENERATION_BUTTON_DISABLED', 'Generate button is unavailable; do not automatically retry this operation');
       }
       assertUiCurrent(epoch);
-      reserveProjectCredits({ account: expectedAccount, projectId: intendedProjectId,
-        operationId: bounded.operationId, credits: bounded.quote.total });
+      if (bounded?.requested?.type === 'video') {
+        reserveProjectCredits({ account: expectedAccount, projectId: intendedProjectId,
+          operationId: bounded.operationId, credits: bounded.quote.total });
+      }
       const reqType = bounded?.requested?.type;
       const acknowledgement = reqType === 'image'
         ? observeImageSubmission(page, bounded.requested.prompt, { expectedAccount })

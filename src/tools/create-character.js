@@ -46,19 +46,30 @@ export async function handleCreateCharacter(args) {
         throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, e.message);
       }
 
-      // Navigate to the Characters sidebar section
-      await ensureProjectLibrary(page);
-      const nav = await navigateToSidebar(page, 'Characters');
-      if (!nav) {
-        // Fallback: try direct singular /character route
-        const projectId = extractProjectId(page.url());
-        if (projectId) {
-          const charUrl = `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`;
-          await page.goto(charUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const formSelector = '[placeholder*="Describe your character" i], [data-placeholder*="Describe your character" i], [aria-label*="Describe your character" i]';
+      const newCharLocator = page.getByRole('button', { name: /^(?:New|Create) character$/i })
+        .or(page.getByRole('link', { name: /^New character$/i })).first();
+      const onCharacterCollectionUrl = /\/project\/[^/]+\/character\/?$/i.test(page.url().split('?')[0]);
+      const alreadyOnCharacterView = onCharacterCollectionUrl && (
+        await page.locator(formSelector).first().isVisible().catch(() => false)
+        || await newCharLocator.isVisible().catch(() => false)
+      );
+
+      // Navigate to the Characters sidebar section unless already on this project's /character view
+      if (!alreadyOnCharacterView) {
+        await ensureProjectLibrary(page);
+        const nav = await navigateToSidebar(page, 'Characters');
+        if (!nav) {
+          // Fallback: try direct singular /character route
+          const projectId = extractProjectId(page.url());
+          if (projectId) {
+            const charUrl = `${buildProjectUrl(get('flowUrl', 'https://flow.google.com/'), projectId)}/character`;
+            await page.goto(charUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000);
+          }
+        } else {
           await page.waitForTimeout(2000);
         }
-      } else {
-        await page.waitForTimeout(2000);
       }
 
       const currentUrl = page.url();
@@ -81,14 +92,9 @@ export async function handleCreateCharacter(args) {
 
       await takeScreenshot(page, 'characters-section');
 
-      const formSelector = '[placeholder*="Describe your character" i], [data-placeholder*="Describe your character" i], [aria-label*="Describe your character" i]';
       const onCreateForm = await page.locator(formSelector).first().isVisible().catch(() => false);
 
       if (!onCreateForm) {
-        // Look for a button to open the "New character" creation form
-        const newCharLocator = page.getByRole('button', { name: /^(?:New|Create) character$/i })
-          .or(page.getByRole('link', { name: /^New character$/i })).first();
-
         if (await newCharLocator.isVisible().catch(() => false)) {
           await newCharLocator.click();
           await page.waitForTimeout(2000);
@@ -276,7 +282,7 @@ export async function handleCreateCharacter(args) {
         diagnostics,
         naming: { requested: args.name, status: 'deferred_until_created' },
         message: preparationVerified
-          ? 'Character setup complete. Manual confirmation needed to create.'
+          ? 'Character setup complete (0 credits — character generation is free). Call flow_generate_confirm or set auto_confirm=true to create.'
           : `Character setup unverified (${blockers.map(b => b.message).join('; ')}). Do not confirm until corrected.`,
         screenshot: diagnostics.screenshot,
       });

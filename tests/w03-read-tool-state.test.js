@@ -47,11 +47,16 @@ function buttonPage(texts) {
 }
 
 describe('W03 readToolState decontamination (F09/C4)', () => {
-  it('pure model scrub removes crop_square + icon ligatures', () => {
+  it('pure model scrub removes crop_square + icon ligatures + deprecation badges', () => {
     expect(decontaminateModelField('🍌 Nano Banana Pro crop_square')).toBe('Nano Banana Pro');
     expect(decontaminateModelField('Nano Banana Pro crop_16_9')).toBe('Nano Banana Pro');
     expect(decontaminateModelField('volume_upOmni Flash')).toBe('Omni Flash');
     expect(decontaminateModelField('apps_spark_2 Tools')).toBe('Tools');
+    expect(decontaminateModelField('Veo 3.1 - Fast Leaving Dec 5')).toBe('Veo 3.1 - Fast');
+    expect(decontaminateModelField('volume_upVeo 3.1 - Quality Leaving Dec 5')).toBe('Veo 3.1 - Quality');
+    expect(decontaminateModelField('Omni 1.1 Flash Leaving Dec 5')).toBe('Omni 1.1 Flash');
+    expect(decontaminateModelField('more_vert')).toBe('');
+    expect(decontaminateModelField('more_vert Veo 3.1 - Fast')).toBe('Veo 3.1 - Fast');
   });
 
   it('quality token parses 360p/720p, rejects the rest', () => {

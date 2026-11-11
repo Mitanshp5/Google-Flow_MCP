@@ -303,12 +303,13 @@ export async function createNewProject(page, name, campaign) {
 
   logger.info('Creating new project...');
 
-  // Click "New project"
+  // Click "New project" (wait for SPA home hydration if still on splash screen)
   const newBtnSelectors = [
     'button:has-text("New project")',
     'a:has-text("New project")',
     '[aria-label*="New project"]',
   ];
+  await page.locator(newBtnSelectors.join(', ')).first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
 
   let clicked = false;
   for (const sel of newBtnSelectors) {
@@ -764,8 +765,17 @@ export async function ensureProjectLibrary(page) {
   const match = url.pathname.match(/^\/project\/([^/]+)\/.+/);
   if (url.origin !== 'https://flow.google.com' || !match) return;
   await page.goto(`${url.origin}/project/${match[1]}`, {waitUntil:'domcontentloaded',timeout:30000});
-  await page.locator('mat-sidenav.project-sidenav, mat-nav-list[role="navigation"], nav, [class*="sidebar"]')
-    .first().waitFor({state:'visible',timeout:15000});
+  const sidebar = page.locator('mat-sidenav.project-sidenav, mat-nav-list[role="navigation"], nav, [class*="sidebar"]').first();
+  try {
+    await sidebar.waitFor({state:'visible',timeout:15000});
+  } catch (err) {
+    const bodyText = await page.evaluate(() => (document.body?.innerText || '').trim()).catch(() => '');
+    if (/\bLoading\.{0,3}/i.test(bodyText) || bodyText.length < 120) {
+      await sidebar.waitFor({state:'visible',timeout:15000});
+      return;
+    }
+    throw err;
+  }
 }
 
 // Scoped sidebar roots only. There is deliberately NO document-wide generic

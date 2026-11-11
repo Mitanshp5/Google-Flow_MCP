@@ -6,6 +6,7 @@ import { takeScreenshot } from '../utils/screenshots.js';
 
 import { ensureProjectInContext } from '../navigation/project-navigator.js';
 import { insertMentionReferences, collectMentionNames } from '../navigation/mentions.js';
+import { normalizePromptText, readEditorText } from '../utils/prompt.js';
 import { get } from '../utils/config.js';
 import { commitPreparedGeneration } from '../domain/commit-prepared-generation.js';
 import { ensureManualMode, configurePromptBar, setPromptBarModel, readToolState, attachReferenceFiles, findActionButton, GENERATE_BUTTON_SELECTORS } from '../browser/safe-actions.js';
@@ -206,13 +207,9 @@ export async function handleGenerateImage(args) {
     await promptInput.fill(prompt);
     logger.info('Prompt filled', { promptLength: prompt.length });
     await page.waitForTimeout(500);
-    let filledText = await promptInput.inputValue().catch(() => '');
-    if (!filledText) {
-      filledText = await promptInput.evaluate(el => (el.innerText !== undefined ? el.innerText : el.textContent) || '').catch(() => '');
-    }
-    const normalizePrompt = (s) => String(s || '').replace(/[\r\n\t]+/g, ' ').replace(/[\u00a0\u2000-\u200b\s]+/g, ' ').trim();
-    const normalizedExpected = normalizePrompt(prompt);
-    const normalizedActual = normalizePrompt(filledText);
+    const filledText = await readEditorText(promptInput);
+    const normalizedExpected = normalizePromptText(prompt);
+    const normalizedActual = normalizePromptText(filledText);
     if (!normalizedActual || normalizedActual !== normalizedExpected) {
       await takeScreenshot(page, 'prompt-fill-unverified');
       throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE,
@@ -469,8 +466,8 @@ export async function handleGenerateImage(args) {
       status: isReady ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'image',
       message: isReady
-        ? '✅ Prompt, model and ratio are prepared. No credits consumed. ' +
-          'To generate and consume credits, call again with auto_confirm=true.'
+        ? '✅ Prompt, model and ratio are prepared (0 credits consumed — image generation is free). ' +
+          'Call again with auto_confirm=true to generate.'
         : '⚠️ Image setup completed with unverified settings or references. Review UI state before confirming.',
       model_used: model,
       ratio,

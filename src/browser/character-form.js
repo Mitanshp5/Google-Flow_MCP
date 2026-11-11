@@ -3,26 +3,31 @@ import path from 'path';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
 import { validateLocalImport, sha256Hex, assetHashRegistry } from '../assets/catalog.js';
 import { closeOwnedOverlays } from './overlay-manager.js';
-import { buildUploadPlan } from './upload.js';
+import { ASSET_ID_PATTERNS, ADD_INGREDIENTS_SELECTORS, buildUploadPlan, uploadReferences } from './upload.js';
+import { normalizePromptText, readEditorText } from '../utils/prompt.js';
 
 
 export async function readCharacterReferences(page) {
   try {
-    return await page.evaluate(() => {
+    return await page.evaluate((pats) => {
+      const rFc = new RegExp(pats.flowContentRe, 'i');
+      const rRedir = new RegExp(pats.redirectRe, 'i');
+      const rAsb = new RegExp(pats.asbRe, 'i');
       const refs = [];
       const chips = document.querySelectorAll(
-        '.character-reference, [data-testid="character-reference"], flow-character-form img, .reference-preview img, flow-prompt-box flow-ingredient-chip img, [aria-label*="Describe your character" i] ~ * img'
+        '.character-reference, [data-testid="character-reference"], flow-character-form img, .reference-preview img, flow-prompt-box flow-ingredient-chip img, flow-ingredient-chip.reference-ingredient-chip img, flow-ingredient-chip img, img.chip-image, [aria-label*="Describe your character" i] ~ * img'
       );
       chips.forEach((img) => {
         const src = img.src || '';
-        const match = src.match(/(?:media\.getMediaUrlRedirect\?name=|flow-content\.google\/image\/)([a-f0-9-]+)/i);
+        const asb = src.match(rAsb);
+        const assetId = src.match(rRedir)?.[1] || src.match(rFc)?.[1] || (asb ? `asb:${asb[1]}` : null);
         const name = img.getAttribute('alt') || img.getAttribute('title') || img.getAttribute('data-title') || '';
-        if (match && !refs.some(r => r.assetId === match[1])) {
-          refs.push({ assetId: match[1], name, committed: true });
+        if (assetId && !refs.some(r => r.assetId === assetId)) {
+          refs.push({ assetId, name, committed: true });
         }
       });
       return refs;
-    });
+    }, ASSET_ID_PATTERNS);
   } catch {
     return [];
   }
@@ -83,14 +88,59 @@ export async function attachCharacterReferenceFiles(page, descLocator, files = [
     };
   }
 
-  // Find native character form upload button
+  // Prefer the composer's "+ Add ingredients" picker (Upload media -> Add to prompt),
+  // because the standalone "Upload" button below the character composer starts a separate upload-only character flow.
+  let hasAddIngredients = false;
+  for (const sel of ADD_INGREDIENTS_SELECTORS) {
+    if (await page.locator(sel).first().isVisible().catch(() => false)) {
+      hasAddIngredients = true;
+      break;
+    }
+  }
+  if (hasAddIngredients) {
+    const upRes = await uploadReferences(page, descLocator, list, opts);
+    if (upRes.reason === 'rights_confirmation_required') {
+      return {
+        requested,
+        verified: false,
+        attached: 0,
+        reason: 'rights_confirmation_required',
+        message: 'Flow requires you to confirm rights to this image. Acknowledge the visible dialog, then prepare again; no generation was submitted.',
+        acknowledged: [],
+        notes: ['rights_confirmation_required'],
+      };
+    }
+    const postRefs = await readCharacterReferences(page);
+    const acked = Array.isArray(upRes.acknowledged) ? upRes.acknowledged : [];
+    const acknowledged = acked
+      .filter((a) => a?.assetId && (postRefs.length === 0 || postRefs.some((r) => r.assetId === a.assetId)))
+      .map((a) => ({
+        name: a.name,
+        title: a.title || a.name,
+        assetId: a.assetId,
+        selectedInNativeCharacterForm: true,
+        committedToCharacterForm: true,
+      }));
+    const verified = Boolean(upRes.verified) && acknowledged.length === requested.length;
+    return {
+      requested,
+      uploaded: Boolean(upRes.fileChooserSeen),
+      attached: acknowledged.length,
+      verified,
+      acknowledged,
+      notes: verified
+        ? ['References successfully committed to native character form']
+        : (upRes.notes && upRes.notes.length ? upRes.notes : [upRes.reason || 'Not all references could be verified in native character form']),
+      reason: verified ? null : (upRes.reason || 'Character references not all verified in character form'),
+    };
+  }
+
+  // Fallback for legacy character form fixtures without Add ingredients button
   const uploadBtnCandidates = [
     page.getByRole('button', { name: /^Upload$/i }).first(),
     page.locator('button:has-text("Upload")').first(),
     page.locator('button[aria-label*="Upload" i]').first(),
     page.getByRole('button', { name: /Add from Project/i }).first(),
-    page.locator('button:has-text("Add ingredients")').first(),
-    page.locator('[aria-label*="Add ingredients" i]').first(),
   ];
 
   let uploadBtn = null;
@@ -213,9 +263,16 @@ export async function fillCharacterDescription(page, editor, description, archet
     }, {label:await editor.getAttribute('aria-label'),before,archetype}, {timeout:120000});
   }
   await editor.fill(description);
-  const actual = await editor.inputValue().catch(() => null) ?? await editor.textContent();
-  if (actual.replace(/\s+/g,' ').trim() !== description.replace(/\s+/g,' ').trim()) {
-    throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'Character description read-back mismatch. No generation submitted.');
+  const actual = await readEditorText(editor);
+  const expectedNorm = normalizePromptText(description);
+  const actualNorm = normalizePromptText(actual);
+  if (!actualNorm || actualNorm !== expectedNorm) {
+    throw new FlowError(ErrorCodes.UNKNOWN_UI_CHANGE, 'Character description read-back mismatch. No generation submitted.', {
+      expectedLength: expectedNorm.length,
+      actualLength: actualNorm.length,
+      expectedPreview: expectedNorm.slice(0, 160),
+      actualPreview: actualNorm.slice(0, 160),
+    });
   }
 }
 

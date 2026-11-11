@@ -77,7 +77,7 @@ Generated outputs and automated FFmpeg quality-review artifacts from real Flow w
 
 ### Core reliability & safety guarantees
 
-- **Prepare-Only by Default (`auto_confirm = false`)**: Image, video, and character generation fills prompts, models, aspect ratios, and `@mentions`, then returns `ready_for_confirmation`. Live credit spend only happens via explicit `flow_generate_confirm` (within `max_credits`) and a persistent **50-credit project ledger**.
+- **Prepare-Only by Default (`auto_confirm = false`) & Story Video Budget**: Image, video, and character generation fills prompts, models, aspect ratios, and `@mentions`, then returns `ready_for_confirmation`. **Image and character generation are always free (`0` credits)** and are never blocked for credit reasons. Paid **video** credit spend requires explicit `flow_generate_confirm` (or `confirm_generate: true`) gated by `max_credits`, a **50-credit default story/project budget** (calculates required story credits up front and prompts for explicit `allocatedBudget` approval if the story needs more), and a persistent project credit ledger.
 - **Account Safety Circuit Breaker (`src/domain/account-circuit-breaker.js`)**: Automatically detects unusual-activity, CAPTCHA, and rate-limit signals, persisting cooldowns in `security/account-cooldowns.json` (`1800s` unusual activity, `900s` CAPTCHA gate, `300s` rate limit). Paid submissions fail closed during active holds while read-only inspection (`flow_status`, `flow_script_status`) stays available.
 - **Passive RPC Telemetry (`src/domain/live-submission.js`)**: Passively observes `batchexecute` RPC traffic (`ogiZ0b` for images; `eb1hJf`, `YhhmEf`, `nprQif`, `MZZa6b` for video) to extract `operationIds` and `mediaIds`, cross-checked against independent Flow DOM verification. Never invokes private RPCs directly or performs blind retries on `submission_unknown`.
 
@@ -242,7 +242,7 @@ npm run build       # bundles src/ -> dist/ (required before register)
    - `flow_generate_video` — prepare (or with `confirm_generate:true`, paid-generate) videos, optionally referencing
      previously generated images/characters via `ingredients` (`@name`
      references)
-   - `flow_generate_confirm` — live-click Generate for a verified `ready_for_confirmation` preparation, gated by `max_credits` (images ~0, Omni cheap, Veo ~20; never confirms `prepared_unverified`)
+   - `flow_generate_confirm` — live-click Generate for a verified `ready_for_confirmation` preparation (images/characters are 0 credits and never credit-blocked; video is gated by story `allocatedBudget` and `max_credits`: Omni ~10, Veo Fast/Lite ~20, Veo Quality ~50; never confirms `prepared_unverified`)
    - `flow_rename_character` — rename a character in its detail page (never the project title)
    - `flow_rename_image` — rename one image by exact title or media ID (never the project title)
    - `flow_list_mention_options` — see what images/characters are available
@@ -293,7 +293,7 @@ Model settings must match both the advertised tool schema and the selected model
 | `flow_status` | Report current connection/page status |
 | `flow_account_check` | Identify the signed-in Google account; enforce `expectedAccount` only if configured |
 | `flow_discover_ui` | Navigate to a Flow page and dump interactive elements (debugging) |
-| `flow_generate_image` | Generate image(s) from a prompt in the current project (prepare-only by default; `auto_confirm:true` spends credits) |
+| `flow_generate_image` | Generate image(s) from a prompt in the current project (free — 0 credits; prepare-only by default; `auto_confirm:true` submits immediately) |
 | `flow_generate_video` | Generate video(s), optionally with `ingredients`/`use_character`/`use_scene` references (prepare-only by default; `confirm_generate:true` spends credits) |
 | `flow_generate_confirm` | Live-click Generate for a verified `ready_for_confirmation` job, gated by `max_credits` (never confirms `prepared_unverified`) |
 | `flow_rename_character` | Rename a character in its detail page (never the project title) |
@@ -400,8 +400,8 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 
 - This server only automates a browser you already control and are signed into — it does not store, transmit, or need your Google credentials.
 - Chrome is launched without the unsupported `--disable-blink-features=AutomationControlled` flag. Direct launches use a temporary copy of your configured profile; Google may still require manual sign-in or additional verification. The server does not bypass those checks.
-- Video generation can consume Google Flow credits; image generations can be zero-credit. Tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
-- The native character image form does not expose the regular image-composer credit label. If the account owner confirms free character image pricing, configure `freeCharacterImages: {"account":"you@example.com","models":["Nano Banana 2.1"]}` in `config/flow.config.json`. Confirmation requires that exact signed-in account, native character form, prepared description and allowlisted image model. The result labels this as account-owner policy, not an observed UI quote. Video, unknown models and conflicting credit labels never inherit this policy.
+- Video generation consumes Google Flow credits; **image generation and character creation are free (`0` credits)** and are never blocked by credit checks, caps, or credit-warning banners. Tools default to safe "prepare only" behavior (`auto_confirm: false`; video live-generate additionally requires `confirm_generate: true`). `flow_create_character` also defaults to `false`.
+- Account-level safety protections (unusual-activity / CAPTCHA / rate-limit circuit breaker) still apply uniformly to protect your Google account.
 - `flow_disconnect` never kills your personal Chrome tabs — it detaches unless the server launched Chrome itself.
 - `flow_account_check` is fail-closed: without positive evidence it returns `verified:false, needsManualCheck:true` (never `assumed:true`).
 - `config/flow.config.json` is gitignored — do not commit it. Runtime caches (`flow.models.json`, `selectors.map.json`, `flow.projects.json`) are gitignored too.
@@ -409,9 +409,9 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 
 ---
 
-## Project credit budget
+## Story & project credit budget
 
-Live image, video and character submissions share a persistent **50-credit total budget per account/project** by default. Set `projectCreditCap` in `config/flow.config.json` to change it. Optional `max_credits` only adds a per-submission ceiling; it does not increase the project budget. Quotes are reserved before clicking Generate and remain reserved for uncertain/failed submissions to avoid accidental overspending. This ledger tracks locally authorized quotes, not Google's billing balance; earlier generations made before this feature are not automatically reconstructed. Restart the MCP after rebuilding to apply code changes.
+Only **video generation** uses credits — image generation and character creation cost **0 credits** and bypass all credit caps/blocks. By default, every story and project allocates a **50-credit video budget** (`DEFAULT_STORY_BUDGET_CREDITS = 50`). When planning a story (`flow_script_create` / `flow_script_update`), the MCP calculates `estimatedRequiredCredits` across all planned video shots (`Veo Quality = 50`, `Veo Fast/Lite = 20`, `Omni Flash = 10` per take); if the story requires more than the allocated budget, the MCP asks you to approve a higher `allocatedBudget` before spending a single video credit (`STORY_BUDGET_APPROVAL_REQUIRED`). You can set `projectCreditCap` in `config/flow.config.json` to change the standalone fallback cap, or pass `allocatedBudget` directly on `flow_script_create` / `flow_script_update`. Optional `max_credits` adds a per-submission video ceiling; it does not raise the approved story budget. Quotes are reserved before clicking Generate on video submissions and remain reserved for uncertain/failed submissions to prevent accidental overspending. Restart the MCP after rebuilding (`npm run build`) to apply code changes.
 
 ---
 

@@ -388,6 +388,7 @@ export function saveNewStory(storyInput, { root = getRuntimeRoot() } = {}) {
       updatedAt: now,
       binding: validStory.binding,
       policy: validStory.policy,
+      budgetConfig: validStory.budgetConfig,
       governance: validStory.governance,
       brief: validStory.brief,
       bible: validStory.bible,
@@ -832,6 +833,12 @@ export function updateStoryRecord(storyId, expectedRevision, patch = {}, { root 
     const mergedInput = {
       binding: { ...currentSnapshot.binding, ...(patch.binding || {}) },
       policy: { ...currentSnapshot.policy, ...(patch.policy || {}) },
+      allocatedBudget: patch.allocatedBudget ?? patch.allocated_budget,
+      ...(patch.budget
+        ? { budget: patch.budget }
+        : (currentSnapshot.budgetConfig?.allocationSource && currentSnapshot.budgetConfig.allocationSource !== 'default_50'
+            ? { budget: { allocatedCredits: currentSnapshot.budgetConfig.allocatedCredits } }
+            : {})),
       governance: { ...currentSnapshot.governance, ...(patch.governance || {}) },
       brief: { ...currentSnapshot.brief, ...(patch.brief || {}) },
       bible: patch.bible
@@ -918,6 +925,7 @@ export function updateStoryRecord(storyId, expectedRevision, patch = {}, { root 
       updatedAt: now,
       binding: validUpdated.binding,
       policy: validUpdated.policy,
+      budgetConfig: validUpdated.budgetConfig,
       governance: validUpdated.governance,
       brief: validUpdated.brief,
       bible: validUpdated.bible,
@@ -1035,3 +1043,16 @@ export function listStories({ root = getRuntimeRoot() } = {}) {
   return summaries;
 }
 export const listScripts = listStories;
+
+/**
+ * Finds the most recently updated story/script bound to the given projectId
+ * (and optional accountKey). Returns the full story snapshot or null.
+ */
+export function findStoryForProject({ projectId, accountKey = null, root = getRuntimeRoot() } = {}) {
+  if (!projectId) return null;
+  const matches = listStories({ root })
+    .filter((s) => s.projectId === projectId && (!accountKey || !s.accountKey || s.accountKey === accountKey))
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  if (matches.length === 0) return null;
+  return getStory(matches[0].storyId, { root });
+}

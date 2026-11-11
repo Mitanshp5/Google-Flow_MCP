@@ -105,7 +105,7 @@ export function isSettingsReady(results, requiredKinds) {
 
 // --- Model-field decontamination (F09/C4) ---------------------------------
 
-const ICON_LIGATURES = [
+export const ICON_LIGATURES = [
   'arrow_drop_down',
   'arrow_drop_up',
   'apps_spark_2',
@@ -114,7 +114,12 @@ const ICON_LIGATURES = [
   'settings_2',
   'crop_landscape',
   'crop_portrait',
+  'more_vert',
+  'more_horiz',
 ];
+
+export const MODEL_DEPRECATION_BODY = '(?:\\s+|\\s*[·•|–—-]\\s*)\\(?(?:leaving|retiring|deprecating|deprecated)\\s+[a-z]{3,9}\\s+\\d{1,2}(?:,?\\s*\\d{4})?\\)?';
+const MODEL_DEPRECATION_SUFFIX_RE = new RegExp(`${MODEL_DEPRECATION_BODY}\\s*$`, 'iu');
 
 export function decontaminateModelField(raw) {
   let s = String(raw || '');
@@ -129,10 +134,12 @@ export function decontaminateModelField(raw) {
   s = s.replace(/[▢▯□◻◼]/g, ' ');
   s = s.replace(/^[\p{Emoji}\p{So}\u2000-\u2BFF]+\s*/u, '').trim();
   s = s.replace(/\s+/g, ' ').trim();
-  // Quantity/ratio tails that leak into a combined chip.
+  // Quantity/ratio/deprecation tails that leak into a combined chip or option.
   let prev;
   do {
     prev = s;
+    s = s.replace(/[\u00c2\u00a0·•|–—\s-]+$/u, '').trim();
+    s = s.replace(MODEL_DEPRECATION_SUFFIX_RE, '').trim();
     s = s.replace(/[\u00c2\u00a0·•|–—\s-]+$/u, '').trim();
     s = s.replace(/[x×]\s*[1-4]\s*$/iu, '').trim();
     s = s.replace(/[\u00c2\u00a0·•|–—\s-]+$/u, '').trim();

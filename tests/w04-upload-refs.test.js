@@ -116,6 +116,66 @@ describe('W04 behavioral uploadReferences end to end', () => {
     }
   }, 15000);
 
+  it('reopens slow-mounting ingredient picker after first selection closes it without strict-mode failure', async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route('https://flow-content.google/**', route => route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1sAAAAASUVORK5CYII=', 'base64'),
+      }));
+      await page.setContent(`
+        <flow-base-prompt-box style="display:block;width:600px">
+          <button id="add-ing" aria-label="Add ingredients">Add ingredients</button>
+          <div id="chips"></div>
+        </flow-base-prompt-box>
+        <div id="picker">
+          <flow-add-menu-asset-item id="pick-a" style="display:block"><img width="20" height="20" src="https://flow-content.google/image/aaaa-1111"><span class="asset-title">refA.png</span></flow-add-menu-asset-item>
+          <flow-add-menu-asset-item id="pick-b" style="display:block"><img width="20" height="20" src="https://flow-content.google/image/bbbb-2222"><span class="asset-title">refB.png</span></flow-add-menu-asset-item>
+        </div>
+        <div id="hidden-clones" style="display:none">
+          <flow-add-menu-asset-item><img width="20" height="20" src="https://flow-content.google/image/bbbb-2222"><span class="asset-title">refB.png</span></flow-add-menu-asset-item>
+          <flow-add-menu-asset-item><img width="20" height="20" src="https://flow-content.google/image/bbbb-2222"><span class="asset-title">refB.png</span></flow-add-menu-asset-item>
+        </div>
+        <script>
+          const chips = document.getElementById('chips');
+          const picker = document.getElementById('picker');
+          const clones = document.getElementById('hidden-clones');
+          const bindClick = (el, src) => {
+            el.onclick = () => {
+              const chip = document.createElement('flow-image-ingredient-chip');
+              const img = document.createElement('img');
+              img.src = src;
+              chip.appendChild(img);
+              chips.appendChild(chip);
+              // Flow closes the menu immediately after picking the first ingredient.
+              picker.innerHTML = '';
+              picker.style.display = 'none';
+            };
+          };
+          bindClick(document.getElementById('pick-a'), 'https://flow-content.google/image/aaaa-1111');
+          bindClick(document.getElementById('pick-b'), 'https://flow-content.google/image/bbbb-2222');
+          document.getElementById('add-ing').onclick = () => {
+            setTimeout(() => {
+              clones.innerHTML = '';
+              picker.style.display = 'block';
+              const item = document.createElement('flow-add-menu-asset-item');
+              item.style.display = 'block';
+              item.innerHTML = '<img width="20" height="20" src="https://flow-content.google/image/bbbb-2222"><span class="asset-title">refB.png</span>';
+              bindClick(item, 'https://flow-content.google/image/bbbb-2222');
+              picker.appendChild(item);
+            }, 250);
+          };
+        </script>
+      `);
+      const result = await attachUploadedPickerAssets(page, ['refA.png', 'refB.png'], { timeoutMs: 5000 });
+      expect(result.verified).toBe(true);
+      expect(result.acknowledged.map((a) => a.assetId)).toEqual(['aaaa-1111', 'bbbb-2222']);
+    } finally {
+      await page.close();
+    }
+  }, 15000);
+
   it('validates+hashes local files, setFiles via chooser, acks stable identity', async () => {
     const page = await browser.newPage();
     try {

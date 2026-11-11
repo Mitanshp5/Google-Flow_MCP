@@ -85,12 +85,13 @@ const TOOL_DEFINITIONS = [
     },
     {
       name: 'flow_generate_confirm',
-      description: 'LIVE PAID CLICK for a verified preparation. Requires a known quote within max_credits. Watches briefly after submission; local queue completion does NOT prove remote render completion. Inspect the new remote asset before downloading. No auto-download.',
+      description: 'Confirm and submit a verified ready_for_confirmation job. Video generation is credit-gated (known quote within max_credits and story/project budget, defaulting to 50 credits unless higher story budget is allocated). Image and character generation are FREE (0 credits) and never blocked for credit reasons. Local queue completion does NOT prove remote render completion.',
       inputSchema: {
         type: 'object',
         properties: {
           job_id: { type: 'string', description: 'Prepared ready_for_confirmation job id.' },
-          max_credits: { type: 'number', description: 'Optional per-submission ceiling. A persistent 50-credit total project budget applies by default.' },
+          max_credits: { type: 'number', description: 'Optional per-submission ceiling for video jobs (default 50 or story allocatedBudget). Ignored for free image/character jobs.' },
+          scriptId: { type: 'string', description: 'Optional story/script ID for pre-spend video budget enforcement.' },
           wait_ms: { type: 'number', description: 'Post-click watch, default 2s, ceiling 30s. Characters return immediately for renaming. Verify remote output before downloading.', default: 2000 },
         },
         required: ['job_id'],
@@ -167,14 +168,14 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_generate_image',
-    description: '⚠️ THESE IMAGES CONSUME CREDITS. By default (auto_confirm=false): fills the prompt, selects model/ratio, takes a screenshot and returns "ready_for_confirmation". Does NOT click Generate. When auto_confirm=true: first verifies the UI is in IMAGE mode (not Video), that the model is an image model, takes a verification screenshot, THEN clicks Generate and waits for the images. NANO/BANANA image models only.',
+    description: 'Image generation is FREE (0 credits; never blocked on credit limits). By default (auto_confirm=false): fills the prompt, selects model/ratio, takes a screenshot and returns "ready_for_confirmation". When auto_confirm=true: verifies UI is in IMAGE mode (never Video) with an image model, THEN clicks Generate. NANO/BANANA image models only.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The text prompt for image generation.' },
         model: { type: 'string', description: 'Model to use: Nano Banana Pro, Nano Banana 2, or Imagen 4.', default: 'Nano Banana 2' },
-        auto_confirm: { type: 'boolean', description: '⚠️ CREDITS. If false (default): only prepares, consumes nothing. If true: verifies that Image mode is active, THEN clicks Generate (consumes credits).', default: false },
-        max_credits: { type: 'number', description: 'Optional per-submission ceiling. Project budget defaults to 50 credits total; unknown quotes are refused.' },
+        auto_confirm: { type: 'boolean', description: 'If false (default): only prepares. If true: verifies Image mode is active, THEN clicks Generate (image generation is free, 0 credits).', default: false },
+        max_credits: { type: 'number', description: 'Optional legacy parameter (image generation is free and never blocked on credit limits).' },
         ratio: { type: 'string', description: 'Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4.', default: '1:1' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to local reference images to upload (optional).' },
         ingredients: { type: 'array', items: { type: 'string' }, description: 'Names of existing project images/characters to reference via "@name" (e.g., ["Bob the Astronaut", "Image 3"]). Use flow_list_mention_options to discover available names.' },
@@ -213,6 +214,7 @@ const TOOL_DEFINITIONS = [
         auto_confirm: { type: 'boolean', description: 'Reserved prepare-only.', default: false },
         confirm_generate: { type: 'boolean', description: 'Authorize paid submit.', default: false },
         max_credits: { type: 'number', description: 'Per-submit cap (default budget 50).' },
+        scriptId: { type: 'string', description: 'Optional story/script ID for pre-spend video budget enforcement.' },
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Local reference image paths.' },
         ingredients: { type: 'array', items: { type: 'string' }, description: '@names from flow_list_mention_options.' },
         use_character: { type: 'string', description: 'Character @name.' },
@@ -256,8 +258,8 @@ const TOOL_DEFINITIONS = [
         reference_images: { type: 'array', items: { type: 'string' }, description: 'Paths to reference images for character design.' },
         project_name: { type: 'string', description: 'Name for the project (will reuse existing project with same campaign, or create new).' },
         campaign: { type: 'string', description: 'Campaign identifier for project matching (e.g., "summer-2026", "new-collection").' },
-        auto_confirm: { type: 'boolean', description: 'If false (default): only fills the description and returns "ready_for_confirmation" without submitting. If true: submits (may use credits).', default: false },
-        max_credits: { type: 'number', description: 'Optional per-submission ceiling. Project budget defaults to 50 credits total; configured character pricing still applies.' },
+        auto_confirm: { type: 'boolean', description: 'If false (default): only fills the description and returns "ready_for_confirmation". If true: submits (character generation is free, 0 credits; never blocked on credit limits).', default: false },
+        max_credits: { type: 'number', description: 'Optional legacy parameter (character generation is free and never blocked on credit limits).' },
       },
       required: ['name', 'description'],
     },
@@ -347,7 +349,7 @@ const TOOL_DEFINITIONS = [
 
   {
     name: 'flow_script_create',
-    description: 'Create a structured script, bible, continuity DAG, and bounded generation policy in immutable revision storage (local planning only, zero credit spend).',
+    description: 'Create a structured script, bible, continuity DAG, and story budget allocation (defaults to 50 credits; calculates required video credits and prompts to approve a higher budget before spending a single video credit when estimated cost exceeds allocated budget).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -355,6 +357,7 @@ const TOOL_DEFINITIONS = [
         brief: { type: 'object', description: 'Script brief: title, aspectRatio, fps, targetDurationSec.' },
         binding: { type: 'object', description: 'Account and project binding: accountKey, projectId.' },
         policy: { type: 'object', description: 'Bounded policy limits: candidateLimit, timeBudgetSec, creditCap.' },
+        allocatedBudget: { type: 'number', description: 'Total credits allocated for this story (defaults to 50). If estimated story video cost exceeds this, video spend is blocked until allocatedBudget is increased.' },
         governance: { type: 'object', description: 'Governance: privacyMode, referenceRights, reviewAuthority.' },
         bible: { type: 'object', description: 'Continuity bible: characters, locations, props with semantic IDs.' },
         scenes: { type: 'array', description: 'Ordered scene list referencing bible locations.' },
@@ -367,13 +370,14 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_script_update',
-    description: 'Update script brief, bible, or shots under CAS revision control, computing semantic invalidations across the continuity state DAG (local planning only, zero credit spend).',
+    description: 'Update script brief, bible, shots, or allocatedBudget under CAS revision control, computing semantic invalidations and recalculating story video credit budget (local planning only, zero credit spend).',
     inputSchema: {
       type: 'object',
       properties: {
         scriptId: { type: 'string', description: 'Target script UUID.' },
         expectedRevision: { type: 'number', description: 'Expected current revision number.' },
-        patch: { type: 'object', description: 'Fields to update (brief, bible, scenes, shots, policy).' },
+        patch: { type: 'object', description: 'Fields to update (brief, bible, scenes, shots, policy, allocatedBudget).' },
+        allocatedBudget: { type: 'number', description: 'Optional top-level total allocated credit budget for this story.' },
         accountKey: { type: 'string', description: 'Optional accountKey verification.' },
         projectId: { type: 'string', description: 'Optional projectId verification.' },
       },
@@ -382,7 +386,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'flow_script_status',
-    description: 'Query script continuity status, shot readiness, blocking prerequisites, and actionable planning steps (local planning only, zero credit spend).',
+    description: 'Query script continuity status, shot readiness, calculated video credit requirement vs allocated budget (default 50), blocking prerequisites, and actionable planning steps (local planning only, zero credit spend).',
     inputSchema: {
       type: 'object',
       properties: {

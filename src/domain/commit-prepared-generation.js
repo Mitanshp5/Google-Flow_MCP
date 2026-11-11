@@ -16,9 +16,12 @@ import {
   tripAccountCooldown,
   RATE_LIMIT_COOLDOWN_SEC,
 } from './account-circuit-breaker.js';
-import { projectCreditCap, reserveProjectCredits } from '../utils/project-credit-budget.js';
+import { projectCreditCap, getReservedProjectCredits, reserveProjectCredits } from '../utils/project-credit-budget.js';
+import { getStory, findStoryForProject } from '../script/store.js';
+import { assertStoryVideoSpendAllowed } from '../script/budget.js';
 import { extractProjectId } from '../navigation/project-navigator.js';
 import { waitForCharacterPortrait } from '../browser/character-form.js';
+import { normalizePromptText, readEditorText } from '../utils/prompt.js';
 
 export const COMMIT_DEFAULT_WAIT_MS = 2000;
 export const COMMIT_MIN_WAIT_MS = 1000;
@@ -118,9 +121,9 @@ export async function snapshotMedia(page) {
   }
 }
 
-async function readRemoteBlocker(page) {
+async function readRemoteBlocker(page, { includeCreditBlockers = true } = {}) {
   const signals = [
-    ['insufficient_credits', /Not enough credits|Insufficient credits/i],
+    ...(includeCreditBlockers ? [['insufficient_credits', /Not enough credits|Insufficient credits/i]] : []),
     ['rate_limited', /Too many requests|Rate limit exceeded|Quota exceeded/i],
   ];
   for (const [reason, text] of signals) {
@@ -233,16 +236,19 @@ export async function commitPreparedGeneration(args = {}) {
     const before = await snapshotMedia(page);
     if (state.type === 'character') {
       const editor = page.locator('[contenteditable="true"][aria-label*="Describe your character" i]').first();
-      const text = await editor.textContent().catch(() => null);
+      const text = await readEditorText(editor);
       const model = decontaminateModelField(await page.locator('button[aria-label="Select model family"]').innerText().catch(() => ''));
+      const expectedText = normalizePromptText(state.prompt || state.description || '');
+      const actualText = normalizePromptText(text);
       if (!state.project_url || page.url() !== state.project_url
-        || !text || text.replace(/\s+/g, ' ').trim() !== String(state.prompt || state.description || '').replace(/\s+/g, ' ').trim()
+        || !actualText || actualText !== expectedText
         || !state.model_used || model !== state.model_used) {
         throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, 'Prepared character project, description or image model changed. Prepare again; no Generate click made.');
       }
     }
 
-    const existingBlocker = await readRemoteBlocker(page);
+    const isPaidVideo = state.type === 'video';
+    const existingBlocker = await readRemoteBlocker(page, { includeCreditBlockers: isPaidVideo });
     if (existingBlocker) {
       if (existingBlocker === 'rate_limited' && observedAccount) {
         tripAccountCooldown(observedAccount, {
@@ -265,14 +271,44 @@ export async function commitPreparedGeneration(args = {}) {
       return result;
     }
 
-    const quote = await readCommitQuote(page, state.quantity || 1, state);
-    if (quote.state !== 'known') {
-      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
-        'Credit cost could not be verified. No Generate click made; an unknown quote is not zero credits.', { quote });
-    }
-    if (quote.total > maxCredits) {
-      throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
-        `Quoted ${quote.total} credits exceeds max_credits ${maxCredits} (pass a higher max_credits to allow, e.g. Veo-class video)`, { quote });
+    const projectId = extractProjectId(page.url());
+    let quote;
+    let effectiveProjectCap = projectCreditCap();
+    if (isPaidVideo) {
+      quote = await readCommitQuote(page, state.quantity || 1, state);
+      if (quote.state !== 'known') {
+        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+          'Credit cost could not be verified. No Generate click made; an unknown quote is not zero credits.', { quote });
+      }
+      const boundScriptId = args.scriptId || args.storyId || state.scriptId || state.storyId || null;
+      const boundStory = boundScriptId
+        ? getStory(boundScriptId)
+        : findStoryForProject({ projectId, accountKey: observedAccount });
+      if (boundStory) {
+        const spentCredits = getReservedProjectCredits({
+          account: boundStory.binding?.accountKey || observedAccount,
+          projectId: projectId || boundStory.binding?.projectId,
+        });
+        const storyBudget = assertStoryVideoSpendAllowed(boundStory, {
+          spentCredits,
+          plannedSpendCredits: quote.total,
+        });
+        effectiveProjectCap = storyBudget.allocatedCredits;
+      }
+      const maxAllowedCredits = args.max_credits === undefined ? effectiveProjectCap : Number(args.max_credits);
+      if (quote.total > maxAllowedCredits) {
+        throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
+          `Quoted ${quote.total} credits exceeds max_credits ${maxAllowedCredits} (pass a higher max_credits to allow, e.g. Veo-class video)`, { quote });
+      }
+    } else {
+      quote = {
+        total: 0,
+        state: 'free',
+        unit: 'total',
+        quantity: state.quantity || 1,
+        raw: null,
+        source: `${state.type}-free-generation-policy`,
+      };
     }
 
     const found = await findActionButton(page, GENERATE_BUTTON_SELECTORS);
@@ -295,12 +331,15 @@ export async function commitPreparedGeneration(args = {}) {
     if (currentAccount) {
       assertAccountActive(currentAccount);
     }
-    reserveProjectCredits({
-      account: currentAccount,
-      projectId: extractProjectId(page.url()),
-      operationId: `confirm:${rawId.trim()}`,
-      credits: quote.total,
-    });
+    if (isPaidVideo) {
+      reserveProjectCredits({
+        account: currentAccount,
+        projectId,
+        operationId: `confirm:${rawId.trim()}`,
+        credits: quote.total,
+        cap: effectiveProjectCap,
+      });
+    }
     state.confirmationJobId = job.id;
 
     const canObserveRpc = typeof page.waitForResponse === 'function';
@@ -407,7 +446,7 @@ export async function commitPreparedGeneration(args = {}) {
       return result;
     }
 
-    const remoteBlocker = !detected && !promptCleared ? await readRemoteBlocker(page) : null;
+    const remoteBlocker = !detected && !promptCleared ? await readRemoteBlocker(page, { includeCreditBlockers: isPaidVideo }) : null;
     if (remoteBlocker) {
       if (remoteBlocker === 'rate_limited' && currentAccount) {
         tripAccountCooldown(currentAccount, {
@@ -431,7 +470,7 @@ export async function commitPreparedGeneration(args = {}) {
       return result;
     }
 
-    const quoteLabel = `${quote.total} credits`;
+    const quoteLabel = isPaidVideo ? `${quote.total} credits` : '0 credits (free)';
     const pollHint = 'Local queue completion only means the submission handler finished, not that Flow finished rendering. Verify the new remote asset is ready before calling flow_download_latest. Do not re-click Generate.';
     const finalResult = {
       status: portrait?.verified ? 'completed' : detected ? 'output_detected' : 'submitted',
