@@ -9,7 +9,7 @@ A practical prompt structure is:
     Subject and approved setting. One specific action with its visible result.
     Requested short line or sound, if relevant. Ending pose or composition.
 
-Keep `camera` for a simple camera move and `style` for look, mood, and lighting in the video tool. Aspect ratio, duration, model, quantity, and quality belong in tool settings, not contradictory prose. Do not describe nonexistent lens/camera-selector features as working MCP fields.
+Keep `camera` for a simple camera move and `style` for look, mood, and lighting in the video tool (`subject`, `setting`, `negative`, and `include_standard_negative` can also be supplied explicitly, while `audio` directives are selectively gated to supported Veo models unless explicitly forced). Aspect ratio, duration, model, quantity, and quality belong in tool settings, not contradictory prose. Do not describe nonexistent lens/camera-selector features as working MCP fields.
 
 ## Narrative beats
 

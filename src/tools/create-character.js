@@ -224,7 +224,7 @@ export async function handleCreateCharacter(args) {
       const preparationVerified = blockers.length === 0;
       const unapplied = [
         ...(!references.verified ? ['reference_images'] : []),
-        ...(!observedModel ? ['model'] : []),
+        ...(!observedModel ? ['name', 'model'] : []),
       ];
 
       const diagnostics = {

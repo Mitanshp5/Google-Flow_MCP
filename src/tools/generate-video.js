@@ -23,6 +23,12 @@ import { buildHandlerSubmissionContext } from '../domain/handler-submission-cont
 import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { createOperationStore } from '../domain/operations.js';
 import { getFlowHome } from '../utils/config.js';
+import {
+  assertAccountActive,
+  getAccountCooldown,
+  detectSafetySignal,
+  tripAccountCooldown,
+} from '../domain/account-circuit-breaker.js';
 
 
 
@@ -77,8 +83,19 @@ export async function handleGenerateVideo(args) {
   if (args.prompt.trim().length > 8000) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'prompt must be ≤ 8000 characters');
   }
-  // Prompt scaffold: scene+action only, optics in UI selectors.
-  const prompt = buildVideoPrompt({ prompt: args.prompt, camera: args.camera, style: args.style });
+  // Prompt scaffold: scene+action only, optics in UI selectors; model-aware audio gating.
+  const preliminaryModel = selectVideoModel(args.model)?.name || args.model || null;
+  let prompt = buildVideoPrompt({
+    prompt: args.prompt,
+    subject: args.subject,
+    setting: args.setting,
+    camera: args.camera,
+    style: args.style,
+    model: preliminaryModel,
+    audio: args.audio,
+    negative: args.negative,
+    includeStandardNegative: args.include_standard_negative === true,
+  });
   const durations = get('durations', ['4s', '6s', '8s', '10s']);
   const rawDuration = args.duration ?? '4s';
   const requestedDuration = typeof rawDuration === 'number' ? `${rawDuration}s` : String(rawDuration);
@@ -172,6 +189,17 @@ export async function handleGenerateVideo(args) {
     }
     const model = resolved.name;
     const caps = resolved.caps;
+    prompt = buildVideoPrompt({
+      prompt: args.prompt,
+      subject: args.subject,
+      setting: args.setting,
+      camera: args.camera,
+      style: args.style,
+      model,
+      audio: args.audio,
+      negative: args.negative,
+      includeStandardNegative: args.include_standard_negative === true,
+    });
     if (mentionNames.length > 0 && !caps.ingredients) {
       // No static caps table for brand-new models (e.g. Omni 1.1 Flash) —
       // the live UI is the arbiter. Attempt the @-insert, which fails closed
@@ -180,6 +208,12 @@ export async function handleGenerateVideo(args) {
     }
     logger.info('Using video model (dynamic universe)', { model, requested: args.model || 'auto', from: resolved.from });
     const liveRun = args.confirm_generate === true;
+    const sessionSubmissionScope = getSessionScope()?.handlerSubmission;
+    const preAccountHint = sessionSubmissionScope?.expectedAccount || get('expectedAccount', null);
+    const preAccountCooldown = preAccountHint ? getAccountCooldown(preAccountHint) : null;
+    if (liveRun && preAccountCooldown?.active) {
+      assertAccountActive(preAccountHint);
+    }
 
     // Try to find video UI — look for textarea, selectors, etc.
     const elements = await detectPageElements(page);
@@ -244,6 +278,9 @@ export async function handleGenerateVideo(args) {
 
     const qty = Math.min(Math.max(Number(args.quantity) || 1, 1), 4);
     const warnings = checkPromptContradictions({ prompt: args.prompt, ingredients: mentionNames, startFrame, endFrame });
+    if (preAccountCooldown?.active) {
+      warnings.push(`Account "${preAccountCooldown.accountKey}" is in safety cooldown for ${preAccountCooldown.remainingSec}s (reason: ${preAccountCooldown.reason}). Paid submission is blocked until cooldown expires.`);
+    }
     for (const w of warnings) logger.warn('Prompt QC', { warning: w });
 
     // Drive the bottom prompt bar directly (user-verified map: Image/Video,
@@ -463,7 +500,17 @@ export async function handleGenerateVideo(args) {
       }
       shotPlan = args.shots.map((s, i) => ({
         index: i + 1,
-        prompt: buildVideoPrompt({ prompt: s.prompt, camera: args.camera, style: args.style }),
+        prompt: buildVideoPrompt({
+          prompt: s.prompt,
+          subject: s.subject ?? args.subject,
+          setting: s.setting ?? args.setting,
+          camera: s.camera ?? args.camera,
+          style: s.style ?? args.style,
+          model,
+          audio: s.audio ?? args.audio,
+          negative: s.negative ?? args.negative,
+          includeStandardNegative: (s.include_standard_negative ?? args.include_standard_negative) === true,
+        }),
         duration: s.duration ? (typeof s.duration === 'number' ? `${s.duration}s` : String(s.duration)) : effectiveDuration,
         anchor: i === 0 ? (anchorFrame || startFrame) : `shot-${i}-strongest-frame (carry forward)`,
       }));
@@ -543,6 +590,18 @@ export async function handleGenerateVideo(args) {
           const fallbackHtml = await page.evaluate(() => document.documentElement?.outerHTML || '').catch(() => '');
           observedAccount = extractObservedAccount(fallbackHtml);
         } catch { /* ignore */ }
+      }
+      const safetySignal = detectSafetySignal({ html: pageHtml });
+      if (safetySignal.tripped) {
+        if (observedAccount || preAccountHint) {
+          tripAccountCooldown(observedAccount || preAccountHint, safetySignal);
+        }
+        throw new FlowError(ErrorCodes.UNUSUAL_ACTIVITY_DETECTED,
+          `Flow page shows a safety hold signal (${safetySignal.details}); generation halted to protect the account.`,
+          { safetySignal });
+      }
+      if (observedAccount) {
+        assertAccountActive(observedAccount);
       }
 
       const currentUrl = page.url() || '';
@@ -646,11 +705,32 @@ export async function handleGenerateVideo(args) {
       note: 'Video generation is a paid feature. Manual confirmation required to proceed.',
     });
 
+    const finalHtml = await page.content().catch(() => '');
+    const observedFinalAccount = extractObservedAccount(finalHtml);
+    const finalSafetySignal = detectSafetySignal({ html: finalHtml });
+    let finalCooldown = observedFinalAccount ? getAccountCooldown(observedFinalAccount) : preAccountCooldown;
+    if (finalSafetySignal.tripped) {
+      if (observedFinalAccount || preAccountHint) {
+        finalCooldown = tripAccountCooldown(observedFinalAccount || preAccountHint, finalSafetySignal);
+      }
+      if (liveRun) {
+        throw new FlowError(ErrorCodes.UNUSUAL_ACTIVITY_DETECTED,
+          `Flow page shows a safety hold signal (${finalSafetySignal.details}); generation halted to protect the account.`,
+          { safetySignal: finalSafetySignal, accountCooldown: finalCooldown });
+      }
+    }
+    if (liveRun && observedFinalAccount) {
+      assertAccountActive(observedFinalAccount);
+    }
+    if (finalCooldown?.active && !warnings.some(w => /safety cooldown/i.test(w))) {
+      warnings.push(`Account "${finalCooldown.accountKey}" is in safety cooldown for ${finalCooldown.remainingSec}s (reason: ${finalCooldown.reason}). Paid submission is blocked until cooldown expires.`);
+    }
+
     jobQueue.completeJob(job.id, {
       status: preparationVerified ? 'ready_for_confirmation' : 'prepared_unverified',
       type: 'video',
       jobId: job.id,
-      account: extractObservedAccount(await page.content()),
+      account: observedFinalAccount,
       model_used: model,
       ratio,
       duration: effectiveDuration,
@@ -681,6 +761,7 @@ export async function handleGenerateVideo(args) {
       settings_verification: settingsVerification,
       qc_warnings: warnings,
       frame_notes: frameNotes,
+      ...(finalCooldown?.active ? { accountCooldown: finalCooldown } : {}),
       message: (preparationVerified
         ? 'Video prompt and settings verified. Not submitted; confirmation uses credits.'
         : 'Video prompt prepared, but verification is incomplete. Do not generate until the reported issues are corrected.') +

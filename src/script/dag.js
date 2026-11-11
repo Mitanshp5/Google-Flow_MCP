@@ -120,6 +120,19 @@ export function buildStoryDag(story) {
       const depType = typeof dep === 'string' ? 'continuity' : (dep.type || 'continuity');
       addEdge(rawTarget, `shot:${sh.id}`, depType);
     }
+
+    // Explicit parentShotId continuity edge if not already declared in dependencies
+    if (sh.parentShotId && typeof sh.parentShotId === 'string') {
+      const cleanParent = sh.parentShotId.trim().replace(/^shot:/, '');
+      const hasParentDep = (sh.dependencies || []).some((dep) => {
+        const t = typeof dep === 'string' ? dep : dep?.target;
+        const type = typeof dep === 'string' ? 'continuity' : (dep?.type || 'continuity');
+        return (type === 'continuity' || type === 'handoff') && String(t || '').trim().replace(/^shot:/, '') === cleanParent;
+      });
+      if (!hasParentDep) {
+        addEdge(`shot:${cleanParent}`, `shot:${sh.id}`, 'continuity');
+      }
+    }
   }
 
   const dag = {
@@ -290,4 +303,49 @@ export function computeSemanticInvalidations(dag, changes = []) {
 export function computeInvalidations(dag, changedNodeIds = []) {
   const changes = changedNodeIds.map((id) => ({ nodeId: id, changeType: 'identity' }));
   return computeSemanticInvalidations(dag, changes);
+}
+
+/**
+ * Groups consecutive story shots into continuous segments for assembly and playback planning.
+ * Adjacent shots with chainType === 'CONTINUATION' and matching parentShotId stay in the
+ * same continuous segment; independent shots form standalone segments.
+ */
+export function extractSceneChains(storyOrShots) {
+  const shots = Array.isArray(storyOrShots)
+    ? storyOrShots
+    : (Array.isArray(storyOrShots?.shots) ? storyOrShots.shots : []);
+
+  const segments = [];
+  let current = [];
+
+  for (const shot of shots) {
+    const isCont = shot?.chainType === 'CONTINUATION'
+      && typeof shot?.parentShotId === 'string'
+      && current.length > 0
+      && current[current.length - 1].id === shot.parentShotId.replace(/^shot:/, '');
+
+    if (isCont) {
+      current.push(shot);
+    } else {
+      if (current.length > 0) {
+        segments.push(current);
+      }
+      current = [shot];
+    }
+  }
+  if (current.length > 0) {
+    segments.push(current);
+  }
+
+  return segments.map((group, index) => {
+    const isChain = group.length > 1;
+    const verifiedChain = isChain && group.slice(1).every((s) => s.continuity?.verifiedContinuity === true);
+    return {
+      segmentIndex: index,
+      isChain,
+      verifiedChain,
+      shotIds: group.map((s) => s.id),
+      shots: group,
+    };
+  });
 }

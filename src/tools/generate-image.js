@@ -20,6 +20,12 @@ import { executeDurableSubmission } from '../domain/submission-adapter.js';
 import { createOperationStore } from '../domain/operations.js';
 import { getFlowHome } from '../utils/config.js';
 import { extractProjectId } from '../navigation/project-navigator.js';
+import {
+  assertAccountActive,
+  getAccountCooldown,
+  detectSafetySignal,
+  tripAccountCooldown,
+} from '../domain/account-circuit-breaker.js';
 import fs from 'fs';
 
 function selectModel(requested) {
@@ -128,6 +134,12 @@ export async function handleGenerateImage(args) {
     // (one-open batch + settings-row model verify). Warn-only in
     // prepare-only (no spend); strict on the paid path.
     const liveRun = autoConfirm === true;
+    const sessionSubmissionScope = getSessionScope()?.handlerSubmission;
+    const preAccountHint = sessionSubmissionScope?.expectedAccount || get('expectedAccount', null);
+    const preAccountCooldown = preAccountHint ? getAccountCooldown(preAccountHint) : null;
+    if (liveRun && preAccountCooldown?.active) {
+      assertAccountActive(preAccountHint);
+    }
     const barSets = await configurePromptBar(page, { mode: 'Image', ratio, quantity: qty });
     const modelRes = await setPromptBarModel(page, model);
     const barAll = [...barSets, modelRes];
@@ -353,6 +365,18 @@ export async function handleGenerateImage(args) {
           observedAccount = extractObservedAccount(fallbackHtml);
         } catch { /* ignore */ }
       }
+      const safetySignal = detectSafetySignal({ html: pageHtml });
+      if (safetySignal.tripped) {
+        if (observedAccount || preAccountHint) {
+          tripAccountCooldown(observedAccount || preAccountHint, safetySignal);
+        }
+        throw new FlowError(ErrorCodes.UNUSUAL_ACTIVITY_DETECTED,
+          `Flow page shows a safety hold signal (${safetySignal.details}); generation halted to protect the account.`,
+          { safetySignal });
+      }
+      if (observedAccount) {
+        assertAccountActive(observedAccount);
+      }
 
       const currentUrl = page.url() || '';
       const observedProjectId = extractProjectId(currentUrl);
@@ -422,6 +446,24 @@ export async function handleGenerateImage(args) {
       return { ...submitted, jobId: job.id };
     }
 
+    const finalHtml = await page.content().catch(() => '');
+    const observedFinalAccount = extractObservedAccount(finalHtml);
+    const finalSafetySignal = detectSafetySignal({ html: finalHtml });
+    let finalCooldown = observedFinalAccount ? getAccountCooldown(observedFinalAccount) : preAccountCooldown;
+    if (finalSafetySignal.tripped) {
+      if (observedFinalAccount || preAccountHint) {
+        finalCooldown = tripAccountCooldown(observedFinalAccount || preAccountHint, finalSafetySignal);
+      }
+      if (liveRun) {
+        throw new FlowError(ErrorCodes.UNUSUAL_ACTIVITY_DETECTED,
+          `Flow page shows a safety hold signal (${finalSafetySignal.details}); generation halted to protect the account.`,
+          { safetySignal: finalSafetySignal, accountCooldown: finalCooldown });
+      }
+    }
+    if (liveRun && observedFinalAccount) {
+      assertAccountActive(observedFinalAccount);
+    }
+
     const setupScreenshot = await takeScreenshot(page, 'image-ready-for-confirmation');
     const result = {
       status: isReady ? 'ready_for_confirmation' : 'prepared_unverified',
@@ -450,7 +492,8 @@ export async function handleGenerateImage(args) {
         attempts: barAll,
         screenshot: setupScreenshot,
       },
-      account: extractObservedAccount(await page.content()),
+      account: observedFinalAccount,
+      ...(finalCooldown?.active ? { accountCooldown: finalCooldown } : {}),
       screenshot: setupScreenshot,
       jobId: job.id,
     };

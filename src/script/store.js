@@ -655,6 +655,7 @@ function classifyModelChanges(current, updated) {
           appearanceDiff ||
           promptDiff ||
           descDiff ||
+          (oldChar.entityType || '') !== (newChar.entityType || '') ||
           safeStringify(oldChar.visual) !== safeStringify(newChar.visual) ||
           safeStringify(oldChar.outfit) !== safeStringify(newChar.outfit) ||
           safeStringify(oldChar.reference_images) !== safeStringify(newChar.reference_images) ||
@@ -759,7 +760,15 @@ function classifyModelChanges(current, updated) {
       if (oldJson !== newJson) {
         const stateBeforeDiff = safeStringify(oldShot.expected_state_before) !== safeStringify(newShot.expected_state_before);
         const stateAfterDiff = safeStringify(oldShot.expected_state_after) !== safeStringify(newShot.expected_state_after);
-        const hasStateDiff = stateBeforeDiff || stateAfterDiff;
+        const continuityDiff =
+          (oldShot.chainType || 'ROOT') !== (newShot.chainType || 'ROOT') ||
+          (oldShot.parentShotId || null) !== (newShot.parentShotId || null) ||
+          (oldShot.continuity?.startFrameSource || null) !== (newShot.continuity?.startFrameSource || null) ||
+          (oldShot.continuity?.endFrameTarget || null) !== (newShot.continuity?.endFrameTarget || null) ||
+          (oldShot.continuity?.lastFrameAssetId || null) !== (newShot.continuity?.lastFrameAssetId || null) ||
+          (oldShot.continuity?.transitionPrompt || '') !== (newShot.continuity?.transitionPrompt || '') ||
+          safeStringify(oldShot.continuity?.expectedEntities) !== safeStringify(newShot.continuity?.expectedEntities);
+        const hasStateDiff = stateBeforeDiff || stateAfterDiff || continuityDiff;
 
         const hasIdentityDiff =
           (oldShot.prompt || '') !== (newShot.prompt || '') ||

@@ -1,26 +1,85 @@
 # Google Flow Browser MCP
 
+<p align="center">
+  <img src="docs/assets/hero-banner.png" alt="Google Flow Browser MCP — Stateful AI Image & Video Production Pipeline" width="100%" />
+</p>
+
+<p align="center">
+  <a href="#how-it-works">Architecture</a> &bull;
+  <a href="#visual-showcase">Visual Showcase</a> &bull;
+  <a href="#google-flow-production-workflow">Production Workflow</a> &bull;
+  <a href="#available-tools">31 MCP Tools</a> &bull;
+  <a href="#setup">Setup</a> &bull;
+  <a href="#project-credit-budget">Safety &amp; Spend</a>
+</p>
+
 An MCP (Model Context Protocol) server that lets an AI agent drive
 [Google Flow](https://flow.google.com/) (`flow.google.com`)
 through your own logged-in Chrome profile — generating images, videos,
-characters, and project scenes — without ever sharing your Google credentials with
+characters, and multi-shot scenes — without ever sharing your Google credentials with
 the agent.
 
 This server supports **Windows**, **macOS**, and **Linux** out of the box using unified npm commands that automatically dispatch platform-specific execution.
 
 ---
 
+## Visual Showcase
+
+Generated outputs and automated FFmpeg quality-review artifacts from real Flow workflows driven by this MCP:
+
+<table>
+  <tr>
+    <td width="33%" align="center">
+      <img src="docs/assets/showcase-vesper.jpg" alt="Vesper Character Reference Sheet" width="100%" /><br />
+      <sub><strong>Character Bible Reference (<code>Vesper</code>)</strong><br />Consistent multi-angle identity sheet for <code>@mention</code> casting</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/showcase-rook.jpg" alt="Rook Character Reference Sheet" width="100%" /><br />
+      <sub><strong>Character Bible Reference (<code>Rook</code>)</strong><br />Matched studio turnaround for multi-character scenes</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/showcase-bridge.jpg" alt="Underground Industrial Bridge Concept" width="100%" /><br />
+      <sub><strong>Location Anchor (<code>Underground Bridge</code>)</strong><br />Environment reference locking lighting &amp; staging</sub>
+    </td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/assets/showcase-video-review.jpg" alt="Automated 4x2 FFmpeg Video Contact Sheet" width="100%" /><br />
+      <sub><strong>Advisory Video QA Contact Sheet (4&times;2 Grid)</strong><br />Extracted by <code>extractVideoContactSheet()</code> in <code>src/media/video-reviewer.js</code></sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/assets/showcase-ad-storyboard.jpg" alt="Multi-Shot Production Storyboard" width="100%" /><br />
+      <sub><strong>Multi-Shot Storyboard Sheet</strong><br />Planned &amp; reviewed across a versioned <code>flow_script_*</code> continuity DAG</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## How it works
+
+<p align="center">
+  <img src="docs/assets/architecture.png" alt="Google Flow MCP Architecture and Safety Control Plane" width="100%" />
+</p>
 
 1. **Chrome** is launched with `--remote-debugging-port` (Chrome DevTools
    Protocol / CDP) using a real Chrome profile that's already signed in to
    your Google account.
 2. The **MCP server** (`src/index.js`) connects to that Chrome instance via
    Playwright's `connectOverCDP` and drives the Google Flow web app — filling
-   prompts, clicking buttons, reading results.
+   prompts, inspecting live credit quotes, observing network acknowledgements, and reading results.
 3. Your **AI agent** (Claude / OpenCode / any MCP client) talks to the MCP
-   server over stdio and calls tools like `flow_generate_image`,
-   `flow_generate_video`, `flow_create_character`, etc.
+   server over stdio using **31 Zod-validated tools** (`flow_generate_image`,
+   `flow_generate_video`, `flow_create_character`, `flow_script_*`, etc.).
+
+### Core reliability & safety guarantees
+
+- **Prepare-Only by Default (`auto_confirm = false`)**: Image, video, and character generation fills prompts, models, aspect ratios, and `@mentions`, then returns `ready_for_confirmation`. Live credit spend only happens via explicit `flow_generate_confirm` (within `max_credits`) and a persistent **50-credit project ledger**.
+- **Account Safety Circuit Breaker (`src/domain/account-circuit-breaker.js`)**: Automatically detects unusual-activity, CAPTCHA, and rate-limit signals, persisting cooldowns in `security/account-cooldowns.json` (`1800s` unusual activity, `900s` CAPTCHA gate, `300s` rate limit). Paid submissions fail closed during active holds while read-only inspection (`flow_status`, `flow_script_status`) stays available.
+- **Passive RPC Telemetry (`src/domain/live-submission.js`)**: Passively observes `batchexecute` RPC traffic (`ogiZ0b` for images; `eb1hJf`, `YhhmEf`, `nprQif`, `MZZa6b` for video) to extract `operationIds` and `mediaIds`, cross-checked against independent Flow DOM verification. Never invokes private RPCs directly or performs blind retries on `submission_unknown`.
 
 Because the agent never touches your Google password — it only sends
 commands to a browser that's already logged in — there's no credential
@@ -200,6 +259,17 @@ everything ends up in one place instead of a new project per request.
 
 For directed multi-shot videos, start with [Google Flow Production](skills/google-flow-production/SKILL.md). It includes brief and shot-plan templates, continuity checks, fifteen on-demand creative style cards, prepare-only tool examples, and final-delivery checks. The workflow uses the existing MCP tools; it does not add a renderer or change credit safeguards.
 
+<p align="center">
+  <img src="docs/assets/pipeline-workflow.png" alt="End-to-End Multi-Shot AI Video Production Workflow" width="100%" />
+</p>
+
+### Layer 2 Stateful Production Capabilities
+
+- **DAG Scene Chaining & Continuity State (`src/script/`)**: Plan scripts with `flow_script_create` .. `flow_script_resume` using `ROOT`, `CONTINUATION`, and `INSERT` shot edges, 7 entity types (`character`, `location`, `prop`, `visual_asset`, `creature`, `generic_troop`, `faction`), automated `CONTINUITY_BREAK` validation, last-frame carry-forward (`start_frame` / `end_frame`), and `sceneChains` tracking in `getStoryStatus`.
+- **Selective Prompt Scaffolding (`subject`, `setting`, `audio`, `negative`, `include_standard_negative`)**: `flow_generate_image` and `flow_generate_video` compose structured prompts in `src/utils/prompt.js`, gating audio instructions specifically to Veo video models.
+- **Advisory Video QA (`src/media/video-reviewer.js`)**: Extracts FFmpeg 4&times;2 contact sheets (`extractVideoContactSheet()`) and evaluates 6 weighted quality dimensions (`VIDEO_REVIEW_WEIGHTS` summing to `1.00`) via `evaluateVideoReview()` and `generateAdvisoryFixGuide()`. Output is strictly advisory (`advisoryOnly: true`, `requiresAuthorizationForRegen: true`).
+- **Continuity-Safe FFmpeg Assembly (`scripts/assemble-video.mjs`)**: Standalone local FFmpeg script normalizing clips to H.264 `yuv420p` and 48kHz stereo AAC audio (`--inputs`, `--output`, `--manifest`, `--transition auto|cut|xfade`, `--xfade-duration`, `--skip-lead`, `--narration`, `--music`, `--extract-frames`, `--report`). Automatically suppresses lead-frame trimming on `CONTINUATION` shots so frame-chained cuts remain seamless.
+
 In an agent client with this repository available, ask:
 
 > Read `skills/google-flow-production/SKILL.md` and use it to plan my video. Confirm the brief and shot plan first; do not spend credits until I authorize a budget.
@@ -239,6 +309,12 @@ Model settings must match both the advertised tool schema and the selected model
 | `flow_screenshot` | Take a debug screenshot of the current page |
 | `flow_queue_status` | Check the status of queued generation jobs |
 | `flow_queue_reset` | Forcefully reset the job queue if a job is stuck in "running" state |
+| `flow_script_create` | Create a structured script, continuity bible, DAG, and policy in immutable revision storage (zero credit spend) |
+| `flow_script_update` | Update script brief, bible, scenes, or shots under CAS revision control and compute DAG invalidations |
+| `flow_script_status` | Query script continuity status, `sceneChains`, shot readiness, blocking prerequisites, and next steps |
+| `flow_script_review` | Submit digest-bound human/director reviews, score candidates, or update reference/pack selections |
+| `flow_script_run` | Stage bounded local image-candidate intents, `local_import` assets, or `review-artifacts` contact sheets |
+| `flow_script_resume` | Resume/advance a script run within its existing bounded candidate and time budget |
 
 ---
 
@@ -293,6 +369,8 @@ If the result is `ambiguous`, choose the intended asset from the returned `asset
 
 ## Project layout
 
+Core runtime modules are organized across `src/browser/` (CDP connection, UI transaction lock, account check), `src/domain/` (`account-circuit-breaker.js`, `live-submission.js`, `commit-prepared-generation.js`, `submission-policy.js`), `src/media/` (`video-reviewer.js`), `src/script/` (DAG planning & continuity validation), `src/storage/`, `scripts/assemble-video.mjs` (local FFmpeg delivery CLI), and `docs/assets/` (README visuals & showcase frames).
+
 ```
 config/
   flow.config.example.json   # template — copy to flow.config.json (gitignored)
@@ -331,9 +409,12 @@ tests/                       # vitest unit tests: sanitize, validate, job-queue,
 
 ---
 
+## Project credit budget
+
+Live image, video and character submissions share a persistent **50-credit total budget per account/project** by default. Set `projectCreditCap` in `config/flow.config.json` to change it. Optional `max_credits` only adds a per-submission ceiling; it does not increase the project budget. Quotes are reserved before clicking Generate and remain reserved for uncertain/failed submissions to avoid accidental overspending. This ledger tracks locally authorized quotes, not Google's billing balance; earlier generations made before this feature are not automatically reconstructed. Restart the MCP after rebuilding to apply code changes.
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-# Project credit budget
-
-Live image, video and character submissions share a persistent **50-credit total budget per account/project** by default. Set `projectCreditCap` in `config/flow.config.json` to change it. Optional `max_credits` only adds a per-submission ceiling; it does not increase the project budget. Quotes are reserved before clicking Generate and remain reserved for uncertain/failed submissions to avoid accidental overspending. This ledger tracks locally authorized quotes, not Google's billing balance; earlier generations made before this feature are not automatically reconstructed. Restart the MCP after rebuilding to apply code changes.

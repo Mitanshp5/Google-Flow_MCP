@@ -14,7 +14,7 @@ import {
   STORY_MANIFEST_VERSION,
   STORY_SNAPSHOT_VERSION,
 } from './store.js';
-import { buildStoryDag } from './dag.js';
+import { buildStoryDag, extractSceneChains } from './dag.js';
 import {
   getRuntimeRoot,
   atomicWriteJson,
@@ -203,12 +203,16 @@ export function getStoryStatus({ storyId, accountKey = null, projectId = null },
     shotsSummary.push({
       shotId: shot.id,
       sceneId: shot.sceneId,
+      chainType: shot.chainType || 'ROOT',
+      parentShotId: shot.parentShotId || null,
+      verifiedContinuity: shot.continuity?.verifiedContinuity ?? null,
       status: nodeStates[nodeId]?.status || 'draft',
       readyForGeneration: blocking.length === 0,
       blockingPrerequisites: blocking,
     });
   }
 
+  const sceneChains = extractSceneChains(story);
   const nextActions = computeNextActions(story, dag);
 
   return {
@@ -223,6 +227,7 @@ export function getStoryStatus({ storyId, accountKey = null, projectId = null },
     governance: story.governance,
     nodeSummary: summary,
     shotsSummary,
+    sceneChains,
     nodeStates,
     nextActions,
     canSpend: false,

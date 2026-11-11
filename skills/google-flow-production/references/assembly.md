@@ -6,19 +6,21 @@ There is no MCP editor or exporter tool. Assembly of reviewed clips is a local, 
 
 ## Scripted Media Assembly Helper
 
-A cross-platform helper is provided at `scripts/assemble-video.mjs` to automate FFprobe clip probing, robust last-frame extraction with frame-index fallback, and concat verification:
+A cross-platform helper is provided at `scripts/assemble-video.mjs` to automate FFprobe clip probing, robust last-frame extraction with frame-index fallback, continuity-safe concat/transitions, and optional narration/music audio mixing:
 
 ```bash
-# Example invocation
-node scripts/assemble-video.mjs --inputs clip1.mp4 clip2.mp4 clip3.mp4 --output final_cut.mp4 --extract-frames --report assembly_report.json
+# Example invocation (supports JSON clip descriptors with chainType/verifiedContinuity)
+node scripts/assemble-video.mjs --inputs clip1.mp4 clip2.mp4 clip3.mp4 --output final_cut.mp4 --transition auto --extract-frames --report assembly_report.json
 ```
 
 The script verifies:
 1. Every input has a valid decodable video stream via FFprobe.
 2. Extracts continuation frames into a named directory with size and format verification.
-3. Normalizes and concatenates into H.264 / AAC MP4.
-4. Confirms final duration matches expected clip sum within ±1.0s.
-5. Emits a structured JSON report documenting clip inputs, output dimensions, audio layout, and frame continuity paths.
+3. Enforces continuity safety: when `--skip-lead` is used on standalone/root shots, any shot marked `chainType: "CONTINUATION"` has lead-trimming automatically suppressed (`suppressedLeadTrims`) so frame-chained transitions stay intact.
+4. Selects cuts safely under `--transition auto`: hard cuts within verified continuous `CONTINUATION` segments, and configurable `xfade`/`acrossfade` (`fade`, `wipeleft`, `dissolve`) between independent segments.
+5. Normalizes to H.264 `yuv420p` video with uniform timebase (`settb=AVTB`) and 48kHz stereo AAC audio, with optional `--narration` ducking (`amix normalize=0`) and `--music` underlay.
+6. Confirms final duration matches expected clip sum within ±1.0s (accounting for crossfade overlap).
+7. Emits a structured JSON report documenting clip inputs, suppressed lead trims, audio strategy, output dimensions, and frame continuity paths.
 
 ## Plan a local edit
 

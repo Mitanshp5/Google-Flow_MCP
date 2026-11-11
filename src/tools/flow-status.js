@@ -6,6 +6,7 @@ import { isFlowUrl } from '../utils/sanitize.js';
 import { readToolState } from '../browser/safe-actions.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { extractObservedAccount, verifyAccountState, classifyAppState } from '../browser/app-state.js';
+import { getAccountCooldown } from '../domain/account-circuit-breaker.js';
 
 export async function handleFlowStatus(args = {}) {
   const expectedAccount = get('expectedAccount', null);
@@ -13,6 +14,7 @@ export async function handleFlowStatus(args = {}) {
     browser: isBrowserConnected(),
     account: null,
     accountVerified: null,
+    accountCooldown: null,
     flowAccessible: false,
     oauthRequired: false,
     currentUrl: null,
@@ -73,6 +75,14 @@ export async function handleFlowStatus(args = {}) {
   }
 
   status.expectedAccount = expectedAccount;
+  const cooldownKey = status.account || expectedAccount;
+  if (cooldownKey) {
+    try {
+      status.accountCooldown = getAccountCooldown(cooldownKey);
+    } catch (err) {
+      status.accountCooldown = { active: true, corrupt: true, error: err.message };
+    }
+  }
 
   logger.info('Status check', status);
   return status;

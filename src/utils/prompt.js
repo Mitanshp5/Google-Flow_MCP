@@ -20,7 +20,40 @@ const CAMERA_MOVES = [
   'orbit', 'dolly', 'tracking shot', 'crane shot', 'aerial view', 'slow pan',
 ];
 
-export function buildVideoPrompt({ prompt, camera, style }) {
+const DIALOGUE_VERBS = Object.freeze([
+  'says', 'whispers', 'shouts', 'asks', 'replies', 'murmurs', 'exclaims', 'gasps', 'laughs', 'mutters',
+]);
+
+export const STANDARD_VIDEO_NEGATIVE = 'subtitles, captions, watermark, text on screen, logo, blurry faces, distorted hands';
+
+export function isVeoModel(model) {
+  return Boolean(model && /\bveo\b/i.test(String(model)));
+}
+
+export function formatTimestampBeats(beats = []) {
+  if (!Array.isArray(beats) || beats.length === 0) return '';
+  return beats
+    .filter((b) => b && b.description && String(b.description).trim())
+    .map((b) => {
+      const start = String(b.start || '00:00').trim();
+      const end = String(b.end || '00:02').trim();
+      const desc = String(b.description).trim().replace(/\s+/g, ' ');
+      return `[${start}-${end}] ${desc}`;
+    })
+    .join(' ');
+}
+
+export function buildVideoPrompt({
+  prompt,
+  subject = null,
+  setting = null,
+  camera = null,
+  style = null,
+  model = null,
+  audio = null,
+  negative = null,
+  includeStandardNegative = false,
+} = {}) {
   const base = String(prompt || '').trim();
   if (!base) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'prompt is required and must be a non-empty string');
@@ -30,9 +63,52 @@ export function buildVideoPrompt({ prompt, camera, style }) {
   }
   // Single-line: Flow's chat box splits typed newlines into separate message
   // bubbles (only the last stays as the draft), so join with sentence breaks.
-  const parts = [base.replace(/\s+/g, ' ')];
-  if (camera && String(camera).trim()) parts.push(`Camera move: ${String(camera).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
-  if (style && String(style).trim()) parts.push(`Style: ${String(style).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+  const parts = [];
+  if (subject && String(subject).trim()) {
+    parts.push(`${String(subject).trim().replace(/\s+/g, ' ')}.`);
+  }
+  parts.push(base.replace(/\s+/g, ' '));
+  if (setting && String(setting).trim()) {
+    parts.push(`Setting: ${String(setting).trim().replace(/\s+/g, ' ').slice(0, 400)}.`);
+  }
+  if (camera && String(camera).trim()) {
+    parts.push(`Camera move: ${String(camera).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+  }
+  if (style && String(style).trim()) {
+    parts.push(`Style: ${String(style).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+  }
+
+  // Selective, model-aware audio scaffolding: never inject experimental Veo audio tags unconditionally.
+  const allowAudio = audio && typeof audio === 'object' && (isVeoModel(model) || audio.force === true);
+  if (allowAudio) {
+    const lowerBase = base.toLowerCase();
+    const hasDialogue = DIALOGUE_VERBS.some((verb) => lowerBase.includes(verb));
+    if (hasDialogue && Array.isArray(audio.voiceProfiles) && audio.voiceProfiles.length > 0 && !lowerBase.includes('character voices:')) {
+      const voices = audio.voiceProfiles
+        .filter((v) => v && v.name && v.voiceDescription)
+        .map((v) => `${String(v.name).trim()}: ${String(v.voiceDescription).trim().replace(/\s+/g, ' ')}`);
+      if (voices.length > 0) {
+        parts.push(`Character voices: ${voices.join('. ')}.`);
+      }
+    }
+    if (audio.sfx && String(audio.sfx).trim()) {
+      parts.push(`SFX: ${String(audio.sfx).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+    }
+    if (audio.ambient && String(audio.ambient).trim()) {
+      parts.push(`Audio: ${String(audio.ambient).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+    } else if (audio.allowMusic === false && !lowerBase.includes('audio:') && !lowerBase.includes('music:')) {
+      parts.push(audio.allowVoice
+        ? 'Audio: no background music. Keep character dialogue and natural ambient sounds.'
+        : 'Audio: natural ambient sounds only, no background music, no narration.');
+    }
+  }
+
+  if (negative && String(negative).trim()) {
+    parts.push(`Negative: ${String(negative).trim().replace(/\s+/g, ' ').slice(0, 300)}.`);
+  } else if (includeStandardNegative === true && !base.toLowerCase().includes('negative:')) {
+    parts.push(`Negative: ${STANDARD_VIDEO_NEGATIVE}.`);
+  }
+
   return parts.join(' ').slice(0, 8600);
 }
 

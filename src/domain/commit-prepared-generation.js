@@ -9,7 +9,13 @@ import { get } from '../utils/config.js';
 import { extractObservedAccount } from '../browser/app-state.js';
 import { decontaminateModelField } from '../browser/capabilities.js';
 import { renameCharacterTitle } from '../navigation/character-rename.js';
-import { observeImageSubmission } from './live-submission.js';
+import { observeImageSubmission, observeVideoSubmission } from './live-submission.js';
+import {
+  assertAccountActive,
+  detectSafetySignal,
+  tripAccountCooldown,
+  RATE_LIMIT_COOLDOWN_SEC,
+} from './account-circuit-breaker.js';
 import { projectCreditCap, reserveProjectCredits } from '../utils/project-credit-budget.js';
 import { extractProjectId } from '../navigation/project-navigator.js';
 import { waitForCharacterPortrait } from '../browser/character-form.js';
@@ -195,6 +201,35 @@ export async function commitPreparedGeneration(args = {}) {
       throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED, 'Live generation requires a connected Google Flow project on https://flow.google.com');
     }
 
+    const pageHtml = await page.content().catch(() => '');
+    const observedAccount = extractObservedAccount(pageHtml) || state.account || get('expectedAccount', null);
+    if (observedAccount) {
+      assertAccountActive(observedAccount);
+    }
+
+    const preClickSafetySignal = detectSafetySignal({ html: pageHtml });
+    if (preClickSafetySignal.tripped) {
+      if (observedAccount) {
+        tripAccountCooldown(observedAccount, {
+          ...preClickSafetySignal,
+          details: preClickSafetySignal.details || 'PRE_CLICK_SAFETY_SIGNAL',
+        });
+      }
+      const blockedResult = {
+        status: 'blocked',
+        reason: preClickSafetySignal.reason,
+        safetySignal: preClickSafetySignal,
+        type: state.type,
+        jobId: job.id,
+        preparedJobId: rawId,
+        clicked: false,
+        remoteStatus: 'blocked',
+        message: `Flow returned safety hold signal (${preClickSafetySignal.details}); generation halted to protect the account. Do not retry automatically.`,
+      };
+      jobQueue.completeJob(job.id, blockedResult);
+      return blockedResult;
+    }
+
     const before = await snapshotMedia(page);
     if (state.type === 'character') {
       const editor = page.locator('[contenteditable="true"][aria-label*="Describe your character" i]').first();
@@ -209,6 +244,13 @@ export async function commitPreparedGeneration(args = {}) {
 
     const existingBlocker = await readRemoteBlocker(page);
     if (existingBlocker) {
+      if (existingBlocker === 'rate_limited' && observedAccount) {
+        tripAccountCooldown(observedAccount, {
+          durationSec: RATE_LIMIT_COOLDOWN_SEC,
+          reason: 'rate_limit',
+          details: 'PRE_CLICK_RATE_LIMITED',
+        });
+      }
       const result = {
         status: 'blocked',
         reason: existingBlocker,
@@ -249,29 +291,50 @@ export async function commitPreparedGeneration(args = {}) {
     }
 
     await takeScreenshot(page, 'confirm-before-click');
+    const currentAccount = extractObservedAccount(await page.content().catch(() => '')) || observedAccount;
+    if (currentAccount) {
+      assertAccountActive(currentAccount);
+    }
     reserveProjectCredits({
-      account: extractObservedAccount(await page.content()),
+      account: currentAccount,
       projectId: extractProjectId(page.url()),
       operationId: `confirm:${rawId.trim()}`,
       credits: quote.total,
     });
     state.confirmationJobId = job.id;
 
-    const imageAcknowledgement = state.type === 'image' && state.prompt
-      ? observeImageSubmission(page, state.prompt) : null;
+    const canObserveRpc = typeof page.waitForResponse === 'function';
+    const submissionPrompt = state.prompt || state.description || '';
+    const submissionAcknowledgement = canObserveRpc && submissionPrompt
+      ? (state.type === 'image'
+          ? observeImageSubmission(page, submissionPrompt, { expectedAccount: currentAccount })
+          : state.type === 'video'
+            ? observeVideoSubmission(page, submissionPrompt, { expectedAccount: currentAccount })
+            : null)
+      : null;
 
     await found.locator.click({ timeout: 8000 });
 
-    if (imageAcknowledgement && !(await imageAcknowledgement).acknowledged) {
+    const observedAck = submissionAcknowledgement ? await submissionAcknowledgement : null;
+    if (observedAck && !observedAck.acknowledged) {
       const result = {
-        status: 'submission_unknown',
+        status: observedAck.safetyTripped ? 'blocked' : 'submission_unknown',
+        ...(observedAck.safetyTripped
+          ? {
+              reason: observedAck.safetySignal?.reason || 'unusual_activity',
+              safetyTripped: true,
+              safetySignal: observedAck.safetySignal,
+            }
+          : {}),
         type: state.type,
         jobId: job.id,
         preparedJobId: rawId,
         clicked: true,
-        remoteStatus: 'submission_unknown',
+        remoteStatus: observedAck.safetyTripped ? 'blocked' : 'submission_unknown',
         submissionAcknowledged: false,
-        message: 'Generate was clicked but no image-generation acknowledgement was observed. Inspect the project; do not automatically resubmit.',
+        message: observedAck.safetyTripped
+          ? `Generate was clicked and Flow returned safety hold (${observedAck.safetySignal?.details}); account cooldown activated. Do not retry automatically.`
+          : `Generate was clicked but no ${state.type}-generation acknowledgement was observed. Inspect the project; do not automatically resubmit.`,
       };
       jobQueue.completeJob(job.id, result);
       return result;
@@ -322,8 +385,37 @@ export async function commitPreparedGeneration(args = {}) {
     await takeScreenshot(page, 'confirm-after');
 
     const promptCleared = typeof before?.promptText === 'string' && before.promptText.length > 0 && after?.promptText === '';
+    const postHtml = await page.content().catch(() => '');
+    const postSafetySignal = detectSafetySignal({ html: postHtml });
+    if (!detected && !promptCleared && postSafetySignal.tripped) {
+      if (currentAccount) {
+        tripAccountCooldown(currentAccount, postSafetySignal);
+      }
+      const result = {
+        status: 'blocked',
+        reason: postSafetySignal.reason,
+        safetySignal: postSafetySignal,
+        type: state.type,
+        jobId: job.id,
+        preparedJobId: rawId,
+        clicked: true,
+        remoteStatus: 'blocked',
+        quote,
+        message: `Generate was clicked, but Flow returned safety hold signal (${postSafetySignal.details}); account cooldown activated.`,
+      };
+      jobQueue.completeJob(job.id, result);
+      return result;
+    }
+
     const remoteBlocker = !detected && !promptCleared ? await readRemoteBlocker(page) : null;
     if (remoteBlocker) {
+      if (remoteBlocker === 'rate_limited' && currentAccount) {
+        tripAccountCooldown(currentAccount, {
+          durationSec: RATE_LIMIT_COOLDOWN_SEC,
+          reason: 'rate_limit',
+          details: 'POST_CLICK_RATE_LIMITED',
+        });
+      }
       const result = {
         status: 'blocked',
         reason: remoteBlocker,
@@ -348,6 +440,12 @@ export async function commitPreparedGeneration(args = {}) {
       jobId: job.id,
       model_used: state.model_used,
       quote,
+      ...(observedAck ? {
+        submissionAcknowledged: true,
+        rpc: observedAck.rpc || null,
+        source: observedAck.source || null,
+        telemetry: observedAck.telemetry || null,
+      } : {}),
       ...(naming ? { naming } : {}),
       ...(portrait ? { portrait } : {}),
       mediaBefore: before,

@@ -11,6 +11,7 @@
 // timestamps, null entries, arbitrary na, and absent digests all deny.
 // W05 consumes approvals/reservations durably; no live click in this lane.
 import { FlowError } from '../utils/errors.js';
+import { getAccountCooldown } from './account-circuit-breaker.js';
 
 export const QUOTE_FRESHNESS_MS_DEFAULT = 30_000;
 export const ACCOUNT_FRESHNESS_MS_DEFAULT = 5_000;
@@ -203,6 +204,8 @@ export function evaluateSubmissionPolicy(input = {}) {
     requestDigest = null,
     policy = null,
     capabilities = null,
+    cooldown = null,
+    cooldownHome = undefined,
     now = Date.now(),
   } = input;
   const reasons = [];
@@ -220,6 +223,22 @@ export function evaluateSubmissionPolicy(input = {}) {
       reasons.push('account-timestamp-future');
     } else {
       reasons.push('account-readback-stale');
+    }
+  }
+
+  // Enforce Account Safety Circuit Breaker (persistent cooldown on unusual activity / rate limits)
+  if (cooldown !== false) {
+    if (cooldown && typeof cooldown === 'object' && cooldown.active === true) {
+      reasons.push('account-cooldown-active');
+    } else if (typeof account?.observed === 'string' && account.observed.trim().length > 0) {
+      try {
+        const cd = getAccountCooldown(account.observed, { home: cooldownHome, now });
+        if (cd.active) {
+          reasons.push('account-cooldown-active');
+        }
+      } catch {
+        reasons.push('account-cooldown-corrupt');
+      }
     }
   }
   if (!project || typeof project !== 'object') {

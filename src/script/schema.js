@@ -8,6 +8,16 @@ export const VALID_PRIVACY_MODES = Object.freeze(['private', 'internal', 'public
 export const VALID_REFERENCE_RIGHTS = Object.freeze(['owned', 'licensed', 'synthetic', 'fair_use']);
 export const VALID_REVIEW_AUTHORITIES = Object.freeze(['client_human', 'director', 'automated_advisory']);
 export const VALID_DEPENDENCY_TYPES = Object.freeze(['reference', 'continuity', 'panel', 'take', 'handoff']);
+export const VALID_CHAIN_TYPES = Object.freeze(['ROOT', 'CONTINUATION', 'INSERT']);
+export const VALID_ENTITY_TYPES = Object.freeze([
+  'character',
+  'location',
+  'prop',
+  'visual_asset',
+  'creature',
+  'generic_troop',
+  'faction',
+]);
 
 function gcdBigInt(a, b) {
   let x = typeof a === 'bigint' ? (a < 0n ? -a : a) : BigInt(Math.abs(Number(a)));
@@ -277,16 +287,28 @@ export function validateStoryInput({
     allEntityIds.add(id);
   };
 
+  const validateEntityMetadata = (entity, group) => {
+    registerEntity(entity?.id, group);
+    if (entity.entityType !== undefined && entity.entityType !== null) {
+      if (typeof entity.entityType !== 'string' || !VALID_ENTITY_TYPES.includes(entity.entityType)) {
+        throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Invalid entityType '${entity.entityType}' on ${group} entry '${entity.id}'`, { id: entity.id, entityType: entity.entityType });
+      }
+    }
+    if (entity.voiceDescription !== undefined && entity.voiceDescription !== null && typeof entity.voiceDescription !== 'string') {
+      throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] voiceDescription must be a string on ${group} entry '${entity.id}'`, { id: entity.id });
+    }
+  };
+
   for (const c of characters) {
-    registerEntity(c.id, 'characters');
+    validateEntityMetadata(c, 'characters');
     characterIds.add(c.id);
   }
   for (const l of locations) {
-    registerEntity(l.id, 'locations');
+    validateEntityMetadata(l, 'locations');
     locationIds.add(l.id);
   }
   for (const p of props) {
-    registerEntity(p.id, 'props');
+    validateEntityMetadata(p, 'props');
     propIds.add(p.id);
   }
 
@@ -476,7 +498,58 @@ export function validateStoryInput({
       }
     }
 
-    standardizedShots.push({
+    // Scene chaining & parent-child continuity validation (Layer 2)
+    let resolvedChainType;
+    if (shot.chainType !== undefined && shot.chainType !== null) {
+      if (typeof shot.chainType !== 'string' || !VALID_CHAIN_TYPES.includes(shot.chainType)) {
+        throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Invalid chainType '${shot.chainType}' on shot ${shot.id}. Must be one of: ${VALID_CHAIN_TYPES.join(', ')}`, { shotId: shot.id, chainType: shot.chainType });
+      }
+      resolvedChainType = shot.chainType;
+    }
+
+    let resolvedParentShotId;
+    if (shot.parentShotId !== undefined && shot.parentShotId !== null) {
+      if (typeof shot.parentShotId !== 'string' || !shot.parentShotId.trim()) {
+        throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Shot ${shot.id} parentShotId must be a non-empty string`, { shotId: shot.id, parentShotId: shot.parentShotId });
+      }
+      const cleanParent = shot.parentShotId.trim().replace(/^shot:/, '');
+      if (cleanParent === shot.id) {
+        throw new FlowError('CYCLIC_DEPENDENCY', `[CYCLIC_DEPENDENCY] Shot ${shot.id} cannot chain to itself as parentShotId`, { shotId: shot.id });
+      }
+      resolvedParentShotId = cleanParent;
+      // Auto-register continuity edge if not already declared in dependencies
+      const hasEdge = normalizedDeps.some((d) =>
+        (d.type === 'continuity' || d.type === 'handoff')
+        && d.target.replace(/^shot:/, '') === cleanParent
+      );
+      if (!hasEdge) {
+        normalizedDeps.push({ type: 'continuity', target: `shot:${cleanParent}` });
+      }
+    } else if (resolvedChainType === 'CONTINUATION') {
+      throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] CONTINUATION shot ${shot.id} requires parentShotId`, { shotId: shot.id });
+    }
+
+    let resolvedContinuity;
+    if (shot.continuity !== undefined && shot.continuity !== null) {
+      if (typeof shot.continuity !== 'object' || Array.isArray(shot.continuity)) {
+        throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Shot ${shot.id} continuity metadata must be an object`, { shotId: shot.id });
+      }
+      for (const strKey of ['startFrameSource', 'endFrameTarget', 'lastFrameAssetId', 'transitionPrompt']) {
+        const val = shot.continuity[strKey];
+        if (val !== undefined && val !== null && typeof val !== 'string') {
+          throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Shot ${shot.id} continuity.${strKey} must be a string or null`, { shotId: shot.id, field: strKey });
+        }
+      }
+      if (shot.continuity.verifiedContinuity !== undefined && typeof shot.continuity.verifiedContinuity !== 'boolean') {
+        throw new FlowError('INVALID_STORY_SCHEMA', `[INVALID_STORY_SCHEMA] Shot ${shot.id} continuity.verifiedContinuity must be a boolean`, { shotId: shot.id });
+      }
+      resolvedContinuity = {
+        ...shot.continuity,
+        verifiedContinuity: shot.continuity.verifiedContinuity === true,
+      };
+    }
+
+    const standardizedShot = {
       ...shot,
       plannedSourceFrames,
       trim,
@@ -487,7 +560,12 @@ export function validateStoryInput({
       expected_state_before: stateBefore,
       expected_state_after: stateAfter,
       dependencies: normalizedDeps,
-    });
+    };
+    if (resolvedChainType !== undefined) standardizedShot.chainType = resolvedChainType;
+    if (resolvedParentShotId !== undefined) standardizedShot.parentShotId = resolvedParentShotId;
+    if (resolvedContinuity !== undefined) standardizedShot.continuity = resolvedContinuity;
+
+    standardizedShots.push(standardizedShot);
   }
 
   // Validate real graph structure first: build DAG and run topological sort cycle validation
