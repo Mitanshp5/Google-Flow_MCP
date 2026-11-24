@@ -1,4 +1,5 @@
 import { getPage } from '../browser/connect.js';
+import { loadProjects } from '../navigation/project-navigator.js';
 import { logger } from '../utils/logger.js';
 import { takeScreenshot } from '../utils/screenshots.js';
 import { FlowError, ErrorCodes } from '../utils/errors.js';
@@ -133,7 +134,10 @@ async function exposeAndDownloadTile(page, asset, assertProject = () => {}) {
   try {
     await tile.hover({ timeout: 3000 }).catch(() => {});
   } catch { /* hover best-effort */ }
-  const more = tile.locator('button:has-text("More options"), [aria-label*="More" i], .more').first();
+  // Locale-proof affordances: Flow ships en and pt-BR labels for the same
+  // control (the tab keeps ?hl=en but some controls stay localised).
+  const more = tile.locator([ 'button:has-text("More options")', 'button:has-text("Mais opções")',
+    '[aria-label*="More" i]', '[aria-label*="Mais" i]', '.more' ].join(', ')).first();
   if (await more.isVisible().catch(() => false)) {
     assertProject();
     await more.click({ timeout: 3000 });
@@ -142,15 +146,18 @@ async function exposeAndDownloadTile(page, asset, assertProject = () => {}) {
   assertProject();
   // Scope the Download click to the tile/menu — never a page-wide first
   // download control belonging to another asset.
-  let dlBtn = tile.locator('button:has-text("Download"), [aria-label*="download" i], .dl').first();
+  let dlBtn = tile.locator([ 'button:has-text("Download")', 'button:has-text("Baixar")',
+    '[aria-label*="download" i]', '[aria-label*="baixar" i]', '.dl' ].join(', ')).first();
   if (!(await dlBtn.isVisible().catch(() => false))) {
-    const menuDl = page.locator('.menu:visible button:has-text("Download"), [role="menu"]:visible button:has-text("Download"), [role="menuitem"]:visible:has-text("Download")').first();
+    const menuDl = page.locator([ '.menu:visible button:has-text("Download")', '.menu:visible button:has-text("Baixar")',
+      '[role="menu"]:visible button:has-text("Download")', '[role="menu"]:visible button:has-text("Baixar")',
+      '[role="menuitem"]:visible:has-text("Download")', '[role="menuitem"]:visible:has-text("Baixar")' ].join(', ')).first();
     if (await menuDl.isVisible().catch(() => false)) dlBtn = menuDl;
   }
   if (await dlBtn.getAttribute('aria-haspopup').catch(() => null) === 'menu') {
     assertProject();
     await dlBtn.hover();
-    const original = page.locator('[role="menu"]:visible [role="menuitem"]').filter({ hasText: /Original size/i }).first();
+    const original = page.locator('[role="menu"]:visible [role="menuitem"]').filter({ hasText: /Original size|Tamanho original/i }).first();
     await original.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
     if (!(await original.isVisible().catch(() => false))) {
       return { download: null, error: 'Original-size download option not available; refusing upscale or paid actions' };
@@ -168,32 +175,163 @@ async function exposeAndDownloadTile(page, asset, assertProject = () => {}) {
   return { download };
 }
 
+
+
+
+/** Canonical project identity of the CURRENT tab. Any query string or hash is
+ *  ignored (Flow adds UI parameters such as ?hl=en); host and route stay strict,
+ *  and an explicit project_url still goes through the stricter validator. */
+function currentProjectUrl(pageUrl) {
+  try {
+    const u = new URL(String(pageUrl || ''));
+    if (u.origin !== 'https://flow.google.com') return null;
+    const m = u.pathname.match(/^\/project\/([A-Za-z0-9_-]+)\/?$/);
+    if (!m) return null;
+    return `${u.origin}/project/${m[1]}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Canonical https://flow.google.com/project/<id> URL, or null when not one. */
+function canonicalProjectUrl(value) {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!/^https:\/\/flow\.google\.com\/project\/[A-Za-z0-9_-]+\/?$/.test(raw)) return null;
+  if (raw.includes('..')) return null;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  // Reject anything the parser normalised into a different route.
+  if (parsed.origin !== 'https://flow.google.com') return null;
+  if (!/^\/project\/[A-Za-z0-9_-]+\/?$/.test(parsed.pathname)) return null;
+  if (parsed.search || parsed.hash) return null;
+  return `${parsed.origin}${parsed.pathname.replace(/\/$/, '')}`;
+}
+
+function safeCurrentUrl(page) {
+  try {
+    const u = new URL(page.url());
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Most recently used project URL from the local registry, or null. Never guesses.
+ * Ordering: valid ISO last_used desc; entries without a usable timestamp sort
+ * last and ties break by name so the choice is deterministic, not file order. */
+function mostRecentProjectUrl() {
+  try {
+    const data = loadProjects();
+    const list = (data && Array.isArray(data.projects)) ? data.projects : [];
+    const usable = list
+      .map((p) => {
+        const url = canonicalProjectUrl(p && p.url, );
+        if (!url) return null;
+        const ts = typeof p.last_used === 'string' && !Number.isNaN(Date.parse(p.last_used))
+          ? Date.parse(p.last_used)
+          : null;
+        return { url, ts, name: String(p.name || '') };
+      })
+      .filter(Boolean);
+    if (usable.length === 0) return null;
+    usable.sort((a, b) => {
+      if (a.ts !== b.ts) {
+        if (a.ts === null) return 1;
+        if (b.ts === null) return -1;
+        return b.ts - a.ts;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    return usable[0].url;
+  } catch {
+    return null;
+  }
+}
+
+
+/** Pure candidate selection for flow_download_latest, exported for tests.
+ *  References uploaded for a generation sit in the same feed with their
+ *  original file name, so they can be excluded by title. */
+export function selectDownloadCandidate(tiles = [], { scopeProject = null, scopeKind = null, excludeTitles = [], pick = null } = {}) {
+  const excluded = (excludeTitles || []).map((s) => String(s).toLowerCase());
+  const eligible = excluded.length > 0
+    ? tiles.filter((tile) => !excluded.includes(String(tile?.title || '').toLowerCase()))
+    : tiles;
+  const mapped = selectNewestEligible(eligible, { projectId: scopeProject, kind: scopeKind });
+  if (mapped.status === 'selected') return { status: 'selected', asset: mapped.asset, eligible, explicitPick: false };
+  if (pick === 'first-tile' && eligible.length > 0) {
+    return { status: 'selected', asset: eligible[0], eligible, explicitPick: true };
+  }
+  return { status: mapped.status === 'ambiguous' ? 'ambiguous' : 'not_found', reason: mapped.reason,
+    choices: (mapped.choices || []).map((c) => c.assetId || c.id), eligible };
+}
+
 export async function handleDownloadWithPage(page, args = {}, deps = {}) {
+  let explicitPick = false;
   const shotFn = deps.takeScreenshotFn || takeScreenshot;
   const outDirFn = deps.getOutputDirFn || getOutputDir;
   logger.info('Attempting to download latest result');
   let transfer = null;
-  // A download may open an explicitly requested existing project, never
-  // guess one from the homepage or create a project as a side effect.
-  const projectUrl = args.project_url;
-  if (projectUrl !== undefined && (typeof projectUrl !== 'string'
-    || !/^https:\/\/flow\.google\.com\/project\/[A-Za-z0-9_-]+\/?$/.test(projectUrl))) {
+  // Resolve ONE effective project URL — explicit argument first, then the
+  // opt-in registry fallback. Both paths go through the same strict validator
+  // and the same post-navigation guard, so a redirect can never silently move
+  // the download into a different project.
+  const requestedUrl = canonicalProjectUrl(args.project_url, );
+  if (args.project_url !== undefined && args.project_url !== null && !requestedUrl) {
     throw new FlowError(ErrorCodes.INVALID_PARAMS, 'project_url must be an exact https://flow.google.com/project/<id> URL.');
   }
-  const target = projectUrl?.replace(/\/$/, '');
+  // An already-open project is the user's current context: it is preserved AND
+  // protected. Navigation target and protected project are kept separate so
+  // that "stay where we are" still means "stay in THIS project".
+  const initialProjectUrl = currentProjectUrl(String(page.url() || ''));
+  const registryUrl = args.open_last_project === true && !requestedUrl && !initialProjectUrl
+    ? canonicalProjectUrl(mostRecentProjectUrl(), )
+    : null;
+  const navigationTarget = requestedUrl || registryUrl || null;
+  const effectiveProjectUrl = navigationTarget || initialProjectUrl || null;
   const assertProject = () => {
-    if (!target) return;
-    const current = new URL(page.url());
-    if (current.origin + current.pathname.replace(/\/$/, '') !== target) {
+    if (!effectiveProjectUrl) return;
+    let current;
+    try {
+      current = new URL(page.url());
+    } catch {
+      throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'The requested project is no longer open.', { reason: 'project_unavailable' });
+    }
+    const normalized = `${current.origin}${current.pathname.replace(/\/$/, '')}`;
+    if (normalized !== effectiveProjectUrl) {
       throw new FlowError(ErrorCodes.FLOW_PAGE_NOT_FOUND, 'The requested project is no longer open.', { reason: 'project_unavailable' });
     }
   };
 
   try {
-    if (projectUrl) {
-      const current = new URL(page.url());
-      if (current.origin + current.pathname.replace(/\/$/, '') !== target) {
-        await page.goto(projectUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Only a Flow page can contradict the project guard. Fixtures and tests load
+    // about:blank / data: pages, where "no project" carries no meaning and
+    // refusing would break every non-Flow harness.
+    const insideFlow = /^https:\/\/flow\.google\.com\//.test(String(page.url() || ''));
+    if (!effectiveProjectUrl && insideFlow) {
+      // No canonical project could be resolved (home, a non-canonical route, or
+      // an empty registry). Refuse BEFORE discovery/clicks: downloading from an
+      // unidentified context is exactly the failure this guard exists to stop.
+      return { status: 'not_found', reason: 'project_required', currentUrl: safeCurrentUrl(page),
+        suggested_project_url: mostRecentProjectUrl(),
+        message: 'Open an existing Google Flow project containing a completed image or video before downloading. No canonical project is open.',
+        next_action: 'Retry flow_download_latest with project_url set to the existing project URL, or with open_last_project: true, or open it with flow_open first. No new generation is needed.' };
+    }
+    if (navigationTarget) {
+      let alreadyThere = false;
+      try {
+        const current = new URL(page.url());
+        alreadyThere = `${current.origin}${current.pathname.replace(/\/$/, '')}` === navigationTarget;
+      } catch {
+        alreadyThere = false;
+      }
+      if (!alreadyThere) {
+        await page.goto(navigationTarget, { waitUntil: 'domcontentloaded', timeout: 30000 });
       }
       assertProject();
     }
@@ -219,10 +357,19 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
           message: `Explicit asset "${explicitId}" is not present in the visible library. No file downloaded.`,
           next_action: 'Open the correct project and make the requested completed asset visible, then retry with its current asset_id.' };
       }
+      // Exclusions only make sense against enumerable tiles. Without them the
+      // visible Download control could belong to an excluded reference, so this
+      // path is refused instead of clicking blind.
+      const requestedExclusions = Array.isArray(args.exclude_titles) ? args.exclude_titles.filter(Boolean) : [];
+      if (requestedExclusions.length > 0) {
+        return { status: 'not_found', reason: 'exclusions_require_enumerable_assets',
+          message: 'exclude_titles was given but no asset tiles are enumerable, so the visible Download control cannot be attributed to an allowed asset. No file downloaded.',
+          next_action: 'Wait for the project library to finish loading, or retry without exclude_titles if the visible control is known to be the intended asset.' };
+      }
       // Honest conditional path: the already-open-menu working state (QA
       // single-client retest) with no enumerable tiles. Download the visible
       // context WITHOUT claiming latest identity.
-      const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i]').first();
+      const openDl = page.locator('button:has-text("Download"), [aria-label*="download" i], button:has-text("Baixar")').first();
       if (!(await openDl.isVisible().catch(() => false))) {
         await shotFn(page, 'download-btn-not-found').catch(() => null);
         let currentUrl = null;
@@ -233,6 +380,7 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
           homePage = url.origin === 'https://flow.google.com' && ['/', '/about', '/about/'].includes(url.pathname);
         } catch { /* URL unavailable; do not infer a project from missing evidence. */ }
         return { status: 'not_found', reason: homePage ? 'project_required' : 'no_visible_assets', currentUrl,
+          suggested_project_url: homePage ? mostRecentProjectUrl() : null,
           message: homePage
             ? 'Open an existing Google Flow project containing a completed image or video before downloading. The current page is not a project.'
             : 'No completed image or video could be identified and no Download control is visible on this page.',
@@ -270,19 +418,24 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
       const scopeProject = projects.length === 1 ? projects[0] : null;
       const kinds = [...new Set(tiles.map((t) => t.kind).filter(Boolean))];
       const scopeKind = kinds.length === 1 ? kinds[0] : null;
-      const mapped = selectNewestEligible(tiles, { projectId: scopeProject, kind: scopeKind });
-      if (mapped.status !== 'selected') {
+      const decision = selectDownloadCandidate(tiles, {
+        scopeProject, scopeKind,
+        excludeTitles: Array.isArray(args.exclude_titles) ? args.exclude_titles : [],
+        pick: args.pick || null,
+      });
+      if (decision.status !== 'selected') {
         await shotFn(page, 'download-ambiguous-latest').catch(() => null);
         return {
-          status: mapped.status === 'ambiguous' ? 'ambiguous' : 'not_found',
-          reason: mapped.reason || 'no eligible asset mapping',
-          choices: (mapped.choices || []).map((c) => c.assetId || c.id),
+          status: decision.status === 'ambiguous' ? 'ambiguous' : 'not_found',
+          reason: decision.reason || 'no eligible asset mapping',
+          choices: decision.choices || [],
           assets: tiles.map(({ assetId, title, kind, identityKind }) => ({ assetId, title, kind, identityKind: identityKind || 'media-id' })),
           message: 'Download blocked: no unambiguous latest asset identity.',
           next_action: 'Choose the intended asset from assets/choices and retry flow_download_latest with its exact asset_id. DOM order is not proof of newest; no new generation is needed.',
         };
       }
-      chosen = mapped.asset;
+      chosen = decision.asset;
+      explicitPick = decision.explicitPick === true;
     }
 
     // 3. Mapping validated BEFORE the click — now target its real menu.
@@ -295,7 +448,9 @@ export async function handleDownloadWithPage(page, args = {}, deps = {}) {
     }
     assertProject();
     const saved = await saveMediaDownload(transfer ? transfer.wrap(download) : download, outDirFn, { page });
-    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true, latest_verified: !explicitId, asset: { assetId: chosen.assetId || chosen.id, identityKind: chosen.identityKind || 'media-id', title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
+    return { status: 'downloaded', message: 'Verified media saved with format extensions.', ...saved, asset_verified: true,
+      ...(explicitPick ? { selection: 'first-tile-explicit', selection_note: 'chosen by explicit pick=first-tile (feed order), not by timestamp' } : {}),
+      latest_verified: !explicitId && !explicitPick, asset: { assetId: chosen.assetId || chosen.id, identityKind: chosen.identityKind || 'media-id', title: chosen.title, projectId: chosen.projectId, account: chosen.account } };
   } catch (err) {
     if (err.details?.reason === 'project_unavailable') {
       return { status: 'not_found', reason: 'project_unavailable',

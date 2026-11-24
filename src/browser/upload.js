@@ -2,11 +2,13 @@
 // acknowledgement with identity, and separate slot verification.
 // input.files acceptance alone never proves slot identity.
 import fs from 'fs';
+import { promises as fsp } from 'fs';
 import path from 'path';
 import { validateLocalImport, sha256Hex } from '../assets/catalog.js';
 import { readComposerReferences } from './composer-references.js';
 import { assetHashRegistry } from '../assets/catalog.js';
 import { closeOwnedOverlays } from './overlay-manager.js';
+import { logger } from '../utils/logger.js';
 export const ADD_INGREDIENTS_SELECTORS = [
   'button:has-text("Add ingredients")',
   '[aria-label*="Add ingredients" i]',
@@ -150,15 +152,90 @@ async function clickFirstVisible(page, selectors) {
   return null;
 }
 
+
+// Flow removed the "Add ingredients" menu in some builds. The evidence-backed
+// path that still works is a trusted CDP drag&drop with real file paths; a
+// synthetic JS DragEvent is ignored by the page (isTrusted check).
+export async function dropFilesIntoComposer(page, files = []) {
+  if (!Array.isArray(files) || files.length === 0) return { dropped: false, reason: 'no files' };
+  // The CDP drag reads real paths on the BROWSER host. That is only sound when
+  // the browser runs where we run. Fail closed instead of sending stale paths.
+  if (String(process.env.FLOW_BROWSER_REMOTE || '').toLowerCase() === 'true') {
+    return { dropped: false, reason: 'unsupported_topology: browser is not local, cannot pass host file paths' };
+  }
+  for (const f of files) {
+    const st = await fsp.stat(f).catch(() => null);
+    if (!st || !st.isFile()) return { dropped: false, reason: `not a regular file on the browser host: ${f}` };
+  }
+  const existing = await readComposerChipIdentities(page);
+  const dupes = files.filter((f) => existing.some((c) => c.name && c.name.toLowerCase().includes(path.basename(f).toLowerCase())));
+  const toDrop = files.filter((f) => !dupes.includes(f));
+  if (toDrop.length === 0) {
+    // A chip with the same name is NOT proof that it is our file: names collide
+    // across versions. Do not re-upload (that would duplicate) and do not claim
+    // attachment — the caller must confirm with a human or a new project.
+    return { dropped: false, ambiguousPreexisting: true, preexisting: dupes,
+      chipsBefore: existing.length, chipsAfter: existing.length,
+      reason: 'a chip with the same file name already exists; identity ambiguous, nothing re-uploaded' };
+  }
+  // The composer may still be mounting right after a navigation/reload.
+  let box = null;
+  for (let i = 0; i < 30; i += 1) {
+    box = await page.evaluate(() => {
+      const el = document.querySelector('[contenteditable=true]');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null;
+    }).catch(() => null);
+    if (box) break;
+    await page.waitForTimeout(500);
+  }
+  if (!box) return { dropped: false, reason: 'composer not found for drop' };
+  const before = await page.evaluate(() => document.querySelectorAll('flow-ingredient-chip').length).catch(() => 0);
+  let client = null;
+  try {
+    client = await page.context().newCDPSession(page);
+    const data = { items: [], files: toDrop.map((f) => path.resolve(f)), dragOperationsMask: 1 };
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await client.send('Input.dispatchDragEvent', { type, x: box.x, y: box.y, data });
+      await page.waitForTimeout(250);
+    }
+  } catch (e) {
+    return { dropped: false, reason: `cdp drag failed: ${e.message}` };
+  } finally {
+    if (client) await client.detach().catch(() => {});
+  }
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    const chips = await page.evaluate(() => document.querySelectorAll('flow-ingredient-chip').length).catch(() => 0);
+    if (chips > before) return { dropped: true, chipsBefore: before, chipsAfter: chips, droppedFiles: toDrop };
+    await page.waitForTimeout(300);
+  }
+  // Ambiguous timeout: the drop was sent. Reconcile once against the composer
+  // instead of dropping again (a second drop would duplicate the reference).
+  const after = await readComposerChipIdentities(page);
+  if (after.length > before) {
+    return { dropped: true, chipsBefore: before, chipsAfter: after.length, droppedFiles: toDrop, reconciled: true };
+  }
+  return { dropped: false, reason: 'drop produced no ingredient chip' };
+}
+
 // Real picker flow. The filechooser event fires synchronously with the
 // Upload-media click, so the wait MUST be registered BEFORE the click and
 // awaited together — waiting after the click loses the event.
 // Never falls back to blind input[type=file].
-export async function openUploadPicker(page, {entryLocator} = {}) {
+export async function openUploadPicker(page, {entryLocator, files} = {}) {
   const addHit = entryLocator
     ? await entryLocator.click({timeout:3000}).then(()=>true).catch(()=>false)
     : await clickFirstVisible(page, ADD_INGREDIENTS_SELECTORS);
-  if (!addHit) return { fileChooser: null, error: 'Add ingredients entry not found' };
+  if (!addHit) {
+    // Fallback measured on 2026-11-23: when the menu is gone, a trusted CDP
+    // drop of the real files is what Flow still accepts.
+    const viaDrop = await dropFilesIntoComposer(page, files || []);
+    if (viaDrop.dropped) return { fileChooser: null, dropped: true, ...viaDrop };
+    return { fileChooser: null, dropped: false, error: 'Add ingredients entry not found',
+      dropReason: viaDrop.reason, ambiguousPreexisting: viaDrop.ambiguousPreexisting === true };
+  }
   try {
     await page.waitForTimeout(800);
   } catch { /* ignore */ }
@@ -470,6 +547,30 @@ export async function attachUploadedPickerAssets(page, names, { timeoutMs = 9000
 // End-to-end upload: local validation/hash → real chooser.setFiles →
 // acknowledgement with stable identity scoped to picker/composer.
 // Uncertain acknowledgement stays unverified; no fake mock identity.
+
+/** Composer-side identity for attachments: the chips already in the prompt. */
+export async function readComposerChipIdentities(page) {
+  try {
+    const out = await page.evaluate((pats) => {
+      const rFc = new RegExp(pats.flowContentRe, 'i');
+      const rRedir = new RegExp(pats.redirectRe, 'i');
+      const rAsb = new RegExp(pats.asbRe, 'i');
+      return [...document.querySelectorAll('flow-ingredient-chip')].map((chip) => {
+        const img = chip.querySelector('img');
+        const src = (img && (img.currentSrc || img.src)) || '';
+        const a = src.match(rAsb);
+        const assetId = src.match(rFc)?.[1] || src.match(rRedir)?.[1] || (a ? `asb:${a[1]}` : null);
+        const label = chip.getAttribute('aria-label') || img?.getAttribute('alt') || chip.textContent || '';
+        return { name: String(label).trim(), assetId, src, title: String(label).trim() };
+      });
+    }, ASSET_ID_PATTERNS);
+    return Array.isArray(out) ? out : [];
+  } catch {
+    return [];
+  }
+}
+
+
 export async function uploadReferences(page, inputLocator, files = [], opts = {}) {
   const list = Array.isArray(files) ? files : [];
   const requested = list.map((f) => String(f).split(/[\\/]/).pop());
@@ -520,10 +621,34 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
         }).filter(Boolean);
       }, ASSET_ID_PATTERNS).catch(() => [])
     : [];
-  const opened = await openUploadPicker(page, opts);
-  if (!opened.fileChooser) {
+  const opened = await openUploadPicker(page, { ...opts, files: list });
+  if (!opened.fileChooser && !opened.dropped) {
     await closeOwnedOverlays(page, { preserveRights: true });
-    return { requested, verified: false, reason: opened.error, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: false };
+    return { requested, verified: false, attachmentVerified: false, identityVerified: false,
+      reason: opened.ambiguousPreexisting ? 'preexisting chip with same name: identity ambiguous' : opened.error,
+      // Nothing landed: a human (or a clean composer) must confirm before Generate.
+      needsConfirmation: requested.length > 0,
+      dropReason: opened.dropReason, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: false };
+  }
+  if (opened.dropped) {
+    // Identity is NOT certified here: the chip exposes no file name and Flow
+    // re-encodes uploads, so any hash comparison would be a guess dressed as
+    // proof. Perceptual matching was measured (25/256 bits on a true match) and
+    // rejected as a merge signal; the contract stays explicit.
+    // Attachment counts only when a NEW chip appeared as a consequence of THIS
+    // attempt, and only for the FULL set: one chip for two requested files is
+    // progress, not success.
+    const newChips = Math.max(0, (opened.chipsAfter || 0) - (opened.chipsBefore || 0));
+    const attachmentVerified = newChips >= requested.length;
+    await closeOwnedOverlays(page, { preserveRights: true });
+    return { requested, localRecords, inputAccepted: list.length, acknowledged: opened.acknowledged || [],
+      fileChooserSeen: false, uploadMode: 'cdp-drop', attachmentVerified, identityVerified: false,
+      identityCheck: 'unavailable-in-this-ui', verified: false, newChips,
+      ...(attachmentVerified ? {} : {
+        reason: newChips > 0 ? 'partial attachment: fewer new chips than requested files' : 'drop produced no new chip',
+        needsConfirmation: newChips > 0 || opened.ambiguousPreexisting === true,
+        notes: [`new chips ${newChips}/${requested.length}`],
+      }) };
   }
   try {
     await opened.fileChooser.setFiles(list);
@@ -547,6 +672,31 @@ export async function uploadReferences(page, inputLocator, files = [], opts = {}
   }
   void inputLocator;
   let acknowledged = await readUploadAck(page, requested);
+  // Measured 2026-11-23: the picker still opens and fires a filechooser, but the
+  // chosen files never reach the composer (input.files stays 0, no chip). When
+  // that happens, fall back to the trusted CDP drop instead of failing closed.
+  if (!acknowledged.length && inputAccepted === 0 && Array.isArray(list) && list.length > 0) {
+    const viaDrop = await dropFilesIntoComposer(page, list);
+    if (viaDrop.dropped) {
+      const newChips = Math.max(0, (viaDrop.chipsAfter || 0) - (viaDrop.chipsBefore || 0));
+      const attachmentVerified = newChips >= requested.length;
+      await closeOwnedOverlays(page, { preserveRights: true });
+      return { requested, localRecords, inputAccepted: list.length, acknowledged: [],
+        fileChooserSeen: true, uploadMode: 'picker-then-cdp-drop', attachmentVerified,
+        identityVerified: false, identityCheck: 'unavailable-in-this-ui', verified: false, newChips,
+        ...(attachmentVerified ? {} : {
+          reason: newChips > 0 ? 'partial attachment: fewer new chips than requested files' : 'drop produced no new chip',
+          needsConfirmation: true,
+          notes: [`new chips ${newChips}/${requested.length}`],
+        }) };
+    }
+    if (viaDrop.ambiguousPreexisting) {
+      await closeOwnedOverlays(page, { preserveRights: true });
+      return { requested, localRecords, inputAccepted: 0, acknowledged: [], fileChooserSeen: true,
+        attachmentVerified: false, identityVerified: false, verified: false, needsConfirmation: true,
+        reason: 'preexisting chip with same name: identity ambiguous' };
+    }
+  }
   if (!acknowledged.length && await page.locator('flow-add-menu, flow-add-menu-asset-item').count().catch(() => 0)) {
     const excludeIds = [...new Set([...(opts.excludeAssetIds || []), ...baselineIds, ...(opened.pickerBaselineIds || [])])];
     const attached = await attachUploadedPickerAssets(page, requested, { ...opts, excludeAssetIds: excludeIds });

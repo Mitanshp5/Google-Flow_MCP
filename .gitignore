@@ -75,3 +75,8 @@ scripts/*/
 !/.env.example
 !/.env.sample
 !/.env.template
+
+# core dumps / crash artefacts
+core
+core.*
+*.core
