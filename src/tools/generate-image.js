@@ -250,10 +250,16 @@ export async function handleGenerateImage(args) {
       attached: refAttach.attached,
       input_accepted: refAttach.inputAccepted,
       verified: refAttach.verified,
+      attachment_verified: refAttach.attachmentVerified ?? null,
+      identity_check: refAttach.identityCheck ?? null,
+      upload_mode: refAttach.uploadMode ?? null,
+      ...(refAttach.needsConfirmation ? { needs_confirmation: true } : {}),
       notes: refAttach.notes,
       ...(refAttach.reason ? { reason: refAttach.reason } : {}),
     };
-    if (refPaths.length > 0 && !refAttach.verified) {
+    const refsAcceptable = refAttach.verified === true
+      || (refAttach.uploadMode === 'cdp-drop' && refAttach.attachmentVerified === true);
+    if (refPaths.length > 0 && !refsAcceptable) {
       const msg = `Reference images requested but not all landed in the composer (input accepted ${refAttach.inputAccepted}/${refPaths.length}). No credits spent.`;
       if (liveRun) {
         throw new FlowError(ErrorCodes.MANUAL_VERIFICATION_REQUIRED,
@@ -287,7 +293,11 @@ export async function handleGenerateImage(args) {
     const quantityVerified = Boolean(postState?.quantity && postState.quantity === qty);
 
     // Failed required references must prevent readiness
-    const refImagesOk = refPaths.length === 0 || Boolean(refAttach?.verified);
+    // A drop-attached reference is acceptable when attachment is proven, even if the
+// UI gives no way to prove WHICH file (chip has no name, Flow re-encodes).
+const refImagesOk = refPaths.length === 0
+  || Boolean(refAttach?.verified)
+  || (refAttach?.uploadMode === 'cdp-drop' && refAttach?.attachmentVerified === true);
     const mentionsOk = mentionNames.length === 0 || (mentionResults.failed.length === 0 && mentionResults.inserted.length >= mentionNames.length);
     const referencesVerified = refImagesOk && mentionsOk;
 

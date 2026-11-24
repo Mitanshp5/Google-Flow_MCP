@@ -243,6 +243,9 @@ const TOOL_DEFINITIONS = [
     inputSchema: { type: 'object', properties: {
         asset_id: { type: 'string', description: 'Exact ID from current download choices. May be a thumbnail: token bound to the visible library, not a remote media UUID. Refresh choices after reloading Flow; explicit selection never claims newest.' },
         project_url: { type: 'string', description: 'Exact existing https://flow.google.com/project/<id> URL. Opens that project before discovery; never creates one. Omit to preserve the current project.' },
+        exclude_titles: { type: 'array', items: { type: 'string' }, description: 'Asset titles to ignore during discovery. Use it to skip reference images that were uploaded into the project (they appear in the feed with their original file name).' },
+        pick: { type: 'string', enum: ['first-tile'], description: 'Opt-in shortcut for when several eligible assets exist and none carries a timestamp: take the FIRST tile of the project feed (feed order = newest first). The response reports selection=first-tile-explicit. Omit to keep the strict newest-by-timestamp rule.' },
+        open_last_project: { type: 'boolean', description: 'When the tab is not inside a project (e.g. Flow home), open the most recently used project from the local registry instead of failing with project_required. Never creates a project. Default false. When the tab is on Flow home and no project can be opened, the response includes suggested_project_url (may be null) so the caller can retry explicitly.', default: false },
     } },
   },
 
